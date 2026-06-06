@@ -4,4 +4,7 @@
     <option name="sdkName" value="uv (gpx_editor)" />
   </component>
   <component name="ProjectRootManager" version="2" project-jdk-name="uv (gpx_editor)" project-jdk-type="Python SDK" />
+  <component name="PyreflyConfiguration">
+    <option name="enabled" value="true" />
+  </component>
 </project>

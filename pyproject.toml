@@ -1,10 +1,11 @@
 [project]
 name = "gpx-editor"
-version = "0.2.0"
+version = "0.3.0"
 description = "GPX editor focused on cues and POIs, mainly to copy them from one track to another. It started to edit routes from RACA 2026."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "fitparse>=1.2.0",
     "folium>=0.19.0",
     "matplotlib>=3.10.9",
     "numpy>=2.4.6",
@@ -14,6 +15,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "ruff>=0.15.16",
+    "pyrefly>=1.0.0",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "pytest-qt>=4.4.0",

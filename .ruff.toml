@@ -1,0 +1,19 @@
+[lint]
+select = ["ALL"]
+ignore = [
+    "D203",  # one-blank-line-before-class
+    "D212",  # multi-line-summary-first-line
+    "FA102", # missing-f-string-alias
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[per-file-ignores]
+"tests/**/*.py" = [
+    "D",      # pydocstyle
+    "S101",   # assert
+    "PLR2004", # magic-value-comparison
+]
