@@ -19,9 +19,10 @@ from PySide6.QtWidgets import (
 from gpx_editor.io._distance import nearest_index
 from gpx_editor.io.gpx_reader import read_gpx
 from gpx_editor.io.gpx_writer import write_gpx
+from gpx_editor.io.osm_reader import OSM_CATEGORIES, query_osm_pois, track_bbox
 from gpx_editor.io.tcx_reader import read_tcx
 from gpx_editor.io.tcx_writer import write_tcx
-from gpx_editor.models.route import RouteData
+from gpx_editor.models.route import POIS_SCHEMA, RouteData
 from gpx_editor.models.route_entry import RouteEntry, next_color
 from gpx_editor.ui.elevation_widget import ElevationWidget
 from gpx_editor.ui.map_widget import MapWidget
@@ -35,6 +36,7 @@ class MainWindow(QMainWindow):
         self._active_index: int = -1
         self._open_path: Path | None = None
         self._dirty = False
+        self._osm_cache: dict[tuple, object] = {}  # session cache: (category, bbox) → df
         self._setup_ui()
         self._setup_menu()
         self._setup_status_bar()
@@ -69,6 +71,8 @@ class MainWindow(QMainWindow):
         self.right_panel.cue_table.row_selected.connect(self._on_waypoint_row_selected)
         self.right_panel.poi_table.row_selected.connect(self._on_waypoint_row_selected)
         self.elevation_widget.location_clicked.connect(self._on_elevation_clicked)
+        self.map_widget.poi_requested.connect(self._on_poi_requested)
+        self.map_widget.osm_poi_add.connect(self._on_osm_poi_add)
 
         # Wire route list signals
         self.right_panel.route_list.active_changed.connect(self._on_route_active_changed)
@@ -111,6 +115,10 @@ class MainWindow(QMainWindow):
         self._merge_act = edit_menu.addAction("&Merge Cues && POIs…")
         self._merge_act.setEnabled(False)
         self._merge_act.triggered.connect(self._open_merge_dialog)
+
+        self._osm_act = edit_menu.addAction("Import &OSM POIs…")
+        self._osm_act.setEnabled(False)
+        self._osm_act.triggered.connect(self._open_osm_dialog)
 
     def _setup_status_bar(self) -> None:
         self._status_label = QLabel("No file loaded")
@@ -276,6 +284,57 @@ class MainWindow(QMainWindow):
     # Waypoint (cue / POI) mutation slots
     # ------------------------------------------------------------------
 
+    def _on_poi_requested(self, lat: float, lon: float) -> None:
+        """User clicked the map in Add-POI mode: snap, prompt, append."""
+        if self._active_index < 0 or not self._routes:
+            return
+        route = self._routes[self._active_index].route
+        if len(route.track_points) == 0:
+            QMessageBox.information(self, "No track", "Load a route with track points first.")
+            return
+
+        tp = route.track_points
+        snap_idx, _ = nearest_index(lat, lon, tp["lat"].to_numpy(), tp["lon"].to_numpy())
+        snap_lat = float(tp["lat"][snap_idx])
+        snap_lon = float(tp["lon"][snap_idx])
+        snap_dist = float(tp["distance"][snap_idx])
+
+        from gpx_editor.ui.row_edit_dialog import RowEditDialog
+        dlg = RowEditDialog(
+            row_data={"name": "", "symbol": "", "description": ""},
+            editable_cols=["name", "symbol", "description"],
+            title="Add POI",
+            parent=self,
+        )
+        if dlg.exec() != RowEditDialog.DialogCode.Accepted:
+            return
+
+        vals = dlg.get_values()
+        name = (vals.get("name") or "").strip()
+        if not name:
+            return  # name is required
+
+        existing = route.pois
+        if len(existing) > 0:
+            max_idx = existing["index"].max()
+            next_idx = (int(max_idx) if max_idx is not None else 0) + 1
+        else:
+            next_idx = 0
+
+        new_poi = pl.DataFrame(
+            {
+                "index":       [next_idx],
+                "lat":         [snap_lat],
+                "lon":         [snap_lon],
+                "name":        [name],
+                "description": [vals.get("description")],
+                "symbol":      [vals.get("symbol")],
+                "distance":    [snap_dist],
+            },
+            schema=POIS_SCHEMA,
+        )
+        self._update_active_route(pois=pl.concat([existing, new_poi]))
+
     def _delete_waypoint(self, attr: str, index_val: int) -> None:
         if self._active_index < 0 or not self._routes:
             return
@@ -311,6 +370,113 @@ class MainWindow(QMainWindow):
         )
         self._set_dirty(True)
         self._refresh_view()
+
+    # ------------------------------------------------------------------
+    # OSM import slots
+    # ------------------------------------------------------------------
+
+    def _open_osm_dialog(self) -> None:
+        if self._active_index < 0 or not self._routes:
+            return
+        route = self._routes[self._active_index].route
+        if len(route.track_points) == 0:
+            QMessageBox.information(self, "No track", "Load a route with track points first.")
+            return
+
+        from gpx_editor.ui.osm_query_dialog import OsmQueryDialog
+        dlg = OsmQueryDialog(self)
+        if dlg.exec() != OsmQueryDialog.DialogCode.Accepted:
+            return
+
+        category = dlg.category()
+        buffer_m = dlg.buffer_m()
+        tags = OSM_CATEGORIES[category]
+
+        south, west, north, east = track_bbox(route.track_points, buffer_m)
+        # Round bbox to 3 decimal places (~110 m) for cache key stability
+        cache_key = (category, round(south, 3), round(west, 3), round(north, 3), round(east, 3))
+
+        if cache_key in self._osm_cache:
+            df = self._osm_cache[cache_key]
+            cached = True
+        else:
+            self._status_label.setText(f"Querying OSM for '{category}'…")
+            self.statusBar().repaint()
+            try:
+                df = query_osm_pois(south, west, north, east, tags)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self, "OSM query failed", str(exc))
+                self._update_status()
+                return
+            self._osm_cache[cache_key] = df
+            cached = False
+
+        n = len(df)
+        suffix = " (cached)" if cached else ""
+        self._status_label.setText(
+            f"Found {n} OSM POI{'s' if n != 1 else ''}{suffix}"
+            " — right-click a marker to add to track"
+        )
+        self.map_widget.load_osm_pois(df)
+
+    def _on_osm_poi_add(
+        self, lat: float, lon: float, name: str, description: str, symbol: str
+    ) -> None:
+        """User right-clicked an OSM marker: snap to track and append to active POIs.
+
+        Intentionally skips map reload so zoom/pan and OSM overlay are preserved.
+        """
+        if self._active_index < 0 or not self._routes:
+            return
+        route = self._routes[self._active_index].route
+        if len(route.track_points) == 0:
+            return
+
+        tp = route.track_points
+        snap_idx, _ = nearest_index(lat, lon, tp["lat"].to_numpy(), tp["lon"].to_numpy())
+        snap_lat = float(tp["lat"][snap_idx])
+        snap_lon = float(tp["lon"][snap_idx])
+        snap_dist = float(tp["distance"][snap_idx])
+
+        existing = route.pois
+        if len(existing) > 0:
+            max_idx = existing["index"].max()
+            next_idx = (int(max_idx) if max_idx is not None else 0) + 1
+        else:
+            next_idx = 0
+
+        display_name = name.strip() if name.strip() else symbol or "OSM POI"
+
+        new_poi = pl.DataFrame(
+            {
+                "index":       [next_idx],
+                "lat":         [snap_lat],
+                "lon":         [snap_lon],
+                "name":        [display_name],
+                "description": [description or None],
+                "symbol":      [symbol or None],
+                "distance":    [snap_dist],
+            },
+            schema=POIS_SCHEMA,
+        )
+        new_pois = pl.concat([existing, new_poi])
+
+        # Update route data in-memory without triggering a map reload.
+        e = self._routes[self._active_index]
+        r = e.route
+        new_route = RouteData(
+            track_points=r.track_points,
+            cues=r.cues,
+            pois=new_pois,
+            source_file=r.source_file,
+        )
+        self._routes[self._active_index] = RouteEntry(
+            route=new_route, color=e.color, label=e.label, visible=e.visible
+        )
+        # Refresh only tables and status bar — map stays at current zoom/pan.
+        self.right_panel.load_route(new_route)
+        self._set_dirty(True)
+        self._update_status()
 
     # ------------------------------------------------------------------
     # Row-selection slots
@@ -368,7 +534,12 @@ class MainWindow(QMainWindow):
 
     def _set_dirty(self, dirty: bool) -> None:
         self._dirty = dirty
-        self._save_act.setEnabled(bool(self._routes) and self._active_index >= 0)
+        has_active = bool(self._routes) and self._active_index >= 0
+        self._save_act.setEnabled(has_active)
+        self._osm_act.setEnabled(
+            has_active
+            and len(self._routes[self._active_index].route.track_points) > 0
+        )
         self._update_title()
 
     def _update_title(self) -> None:

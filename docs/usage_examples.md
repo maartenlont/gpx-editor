@@ -456,6 +456,231 @@ write_gpx(merged, "/path/to/merged_route.gpx")
 
 ---
 
+## Querying OpenStreetMap for POIs
+
+The `osm_reader` module provides functions to query the Overpass API for amenities
+near your route (water taps, fuel stations, cafes, etc.).
+
+### Available POI Categories
+
+```python
+from gpx_editor.io.osm_reader import OSM_CATEGORIES
+
+# View all available categories
+for category, tags in OSM_CATEGORIES.items():
+    print(f"{category}: {tags}")
+```
+
+**Output:**
+
+```
+Drinking Water: [('amenity', 'drinking_water')]
+Fuel Station: [('amenity', 'fuel')]
+Hotel: [('tourism', 'hotel')]
+Motel: [('tourism', 'motel')]
+Convenience Store: [('shop', 'convenience')]
+Supermarket: [('shop', 'supermarket')]
+Restaurant: [('amenity', 'restaurant')]
+Cafe: [('amenity', 'cafe')]
+Parking: [('amenity', 'parking')]
+Campsite: [('tourism', 'camp_site')]
+Pharmacy: [('amenity', 'pharmacy')]
+```
+
+### Query Water Taps Along a Route
+
+```python
+from gpx_editor.io.gpx_reader import read_gpx
+from gpx_editor.io.osm_reader import track_bbox, query_osm_pois, OSM_CATEGORIES
+
+# Load your route
+route = read_gpx("/path/to/route.gpx")
+
+# Calculate bounding box with 100m buffer around the track
+buffer_m = 100
+south, west, north, east = track_bbox(route.track_points, buffer_m)
+
+# Query OSM for drinking water points
+tags = OSM_CATEGORIES["Drinking Water"]  # [("amenity", "drinking_water")]
+water_pois = query_osm_pois(south, west, north, east, tags)
+
+print(f"Found {len(water_pois)} water taps near the route")
+print(water_pois)
+```
+
+**Output:**
+
+```
+Found 8 water taps near the route
+
+shape: (8, 5)
+┌───────────┬──────────┬────────────────────┬─────────────┬────────┐
+│ lat       ┆ lon      ┆ name               ┆ description ┆ symbol │
+│ ---       ┆ ---      ┆ ---                ┆ ---         ┆ ---    │
+│ f64       ┆ f64      ┆ str                ┆ str         ┆ str    │
+╞═══════════╪══════════╪════════════════════╪═════════════╪════════╡
+│ 52.371234 ┆ 4.896543 ┆ Park Fountain      ┆ 24/7        ┆ water  │
+│ 52.378901 ┆ 4.902345 ┆                    ┆             ┆ water  │
+│ 52.385678 ┆ 4.911234 ┆ Sports Field Water ┆ 08:00-20:00 ┆ water  │
+│ …         ┆ …        ┆ …                  ┆ …           ┆ …      │
+└───────────┴──────────┴────────────────────┴─────────────┴────────┘
+```
+
+### Query Fuel Stations
+
+```python
+from gpx_editor.io.gpx_reader import read_gpx
+from gpx_editor.io.osm_reader import track_bbox, query_osm_pois, OSM_CATEGORIES
+
+route = read_gpx("/path/to/route.gpx")
+
+# Use a larger buffer for fuel stations (500m)
+south, west, north, east = track_bbox(route.track_points, buffer_m=500)
+
+tags = OSM_CATEGORIES["Fuel Station"]  # [("amenity", "fuel")]
+fuel_pois = query_osm_pois(south, west, north, east, tags)
+
+print(f"Found {len(fuel_pois)} fuel stations")
+for row in fuel_pois.iter_rows(named=True):
+    print(f"  - {row['name'] or 'Unnamed'} at ({row['lat']:.5f}, {row['lon']:.5f})")
+```
+
+### Query Multiple Categories at Once
+
+```python
+from gpx_editor.io.gpx_reader import read_gpx
+from gpx_editor.io.osm_reader import track_bbox, query_osm_pois
+import polars as pl
+
+route = read_gpx("/path/to/route.gpx")
+south, west, north, east = track_bbox(route.track_points, buffer_m=200)
+
+# Query multiple amenity types in one call using custom tags
+tags = [
+    ("amenity", "drinking_water"),
+    ("amenity", "fuel"),
+    ("amenity", "cafe"),
+]
+all_pois = query_osm_pois(south, west, north, east, tags)
+
+# Group by symbol to see counts
+print(all_pois.group_by("symbol").len())
+```
+
+### Add OSM POIs to Your Route (Snapped to Track)
+
+```python
+import polars as pl
+from gpx_editor.io.gpx_reader import read_gpx
+from gpx_editor.io.gpx_writer import write_gpx
+from gpx_editor.io.osm_reader import track_bbox, query_osm_pois, OSM_CATEGORIES
+from gpx_editor.io._distance import nearest_index
+from gpx_editor.models.route import RouteData, POIS_SCHEMA
+
+# 1. Load route
+route = read_gpx("/path/to/route.gpx")
+tp = route.track_points
+track_lats = tp["lat"].to_numpy()
+track_lons = tp["lon"].to_numpy()
+track_dists = tp["distance"].to_numpy()
+
+# 2. Query OSM for water taps
+south, west, north, east = track_bbox(tp, buffer_m=100)
+osm_pois = query_osm_pois(south, west, north, east, OSM_CATEGORIES["Drinking Water"])
+
+if len(osm_pois) == 0:
+    print("No water taps found near route")
+else:
+    # 3. Snap each OSM POI to the track
+    snapped_rows = []
+    for row in osm_pois.iter_rows(named=True):
+        snap_idx, dist_m = nearest_index(row["lat"], row["lon"], track_lats, track_lons)
+        
+        # Only add if within 100m of track
+        if dist_m <= 100:
+            snapped_rows.append({
+                "index": len(snapped_rows),
+                "lat": float(track_lats[snap_idx]),
+                "lon": float(track_lons[snap_idx]),
+                "name": row["name"] or "Water Tap",
+                "description": row["description"],
+                "symbol": row["symbol"],
+                "distance": float(track_dists[snap_idx]),
+            })
+    
+    if snapped_rows:
+        # 4. Create DataFrame and merge with existing POIs
+        new_pois = pl.DataFrame(snapped_rows, schema=POIS_SCHEMA)
+        combined = pl.concat([route.pois, new_pois]).sort("distance")
+        combined = combined.with_columns(
+            pl.Series("index", list(range(len(combined))), dtype=pl.Int64)
+        )
+        
+        # 5. Save updated route
+        updated = RouteData(
+            track_points=tp,
+            cues=route.cues,
+            pois=combined,
+            source_file=route.source_file,
+        )
+        write_gpx(updated, "/path/to/route_with_water.gpx")
+        print(f"Added {len(snapped_rows)} water taps to route")
+```
+
+### Query with Custom Bounding Box
+
+```python
+from gpx_editor.io.osm_reader import query_osm_pois
+
+# Manual bounding box (south, west, north, east)
+# Example: Amsterdam city center
+south, west = 52.35, 4.85
+north, east = 52.40, 4.95
+
+# Query for supermarkets
+supermarkets = query_osm_pois(
+    south, west, north, east,
+    tags=[("shop", "supermarket")],
+    timeout=30,  # Increase timeout for large areas
+)
+
+print(f"Found {len(supermarkets)} supermarkets")
+```
+
+### Query with Custom OSM Tags
+
+```python
+from gpx_editor.io.osm_reader import query_osm_pois, track_bbox
+from gpx_editor.io.gpx_reader import read_gpx
+
+route = read_gpx("/path/to/route.gpx")
+bbox = track_bbox(route.track_points, buffer_m=500)
+
+# Query for bicycle repair stations (not in predefined categories)
+bike_repair = query_osm_pois(
+    *bbox,
+    tags=[("amenity", "bicycle_repair_station")],
+)
+
+# Query for public toilets
+toilets = query_osm_pois(
+    *bbox,
+    tags=[("amenity", "toilets")],
+)
+
+# Query for multiple custom tags
+supplies = query_osm_pois(
+    *bbox,
+    tags=[
+        ("shop", "bicycle"),      # Bike shops
+        ("shop", "sports"),       # Sports shops
+        ("amenity", "pharmacy"),  # Pharmacies
+    ],
+)
+```
+
+---
+
 ## Working with Route Entries (GUI Context)
 
 When working with multiple routes in the GUI, routes are wrapped in `RouteEntry`.
