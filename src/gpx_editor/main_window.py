@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -20,6 +21,7 @@ from gpx_editor.io.gpx_reader import read_gpx
 from gpx_editor.io.gpx_writer import write_gpx
 from gpx_editor.io.tcx_reader import read_tcx
 from gpx_editor.io.tcx_writer import write_tcx
+from gpx_editor.models.route import RouteData
 from gpx_editor.models.route_entry import RouteEntry, next_color
 from gpx_editor.ui.elevation_widget import ElevationWidget
 from gpx_editor.ui.map_widget import MapWidget
@@ -73,6 +75,14 @@ class MainWindow(QMainWindow):
         self.right_panel.route_list.color_changed.connect(self._on_route_color_changed)
         self.right_panel.route_list.visibility_changed.connect(self._on_route_visibility_changed)
         self.right_panel.route_list.route_removed.connect(self._on_route_removed)
+        self.right_panel.route_list.route_renamed.connect(self._on_route_renamed)
+
+        # Wire cue/POI edit signals
+        rp = self.right_panel
+        rp.cue_table.row_deleted.connect(lambda idx: self._delete_waypoint("cues", idx))
+        rp.cue_table.row_updated.connect(lambda idx, vals: self._update_waypoint("cues", idx, vals))
+        rp.poi_table.row_deleted.connect(lambda idx: self._delete_waypoint("pois", idx))
+        rp.poi_table.row_updated.connect(lambda idx, vals: self._update_waypoint("pois", idx, vals))
 
     def _setup_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -246,13 +256,61 @@ class MainWindow(QMainWindow):
     def _on_route_removed(self, index: int) -> None:
         if 0 <= index < len(self._routes):
             self._routes.pop(index)
-            # Clamp active_index to valid range
             if not self._routes:
                 self._active_index = -1
             elif self._active_index >= len(self._routes):
                 self._active_index = len(self._routes) - 1
             self._merge_act.setEnabled(len(self._routes) >= 2)
             self._refresh_view()
+
+    def _on_route_renamed(self, index: int, label: str) -> None:
+        if 0 <= index < len(self._routes):
+            e = self._routes[index]
+            self._routes[index] = RouteEntry(
+                route=e.route, color=e.color, label=label, visible=e.visible
+            )
+            self._set_dirty(True)
+            self._refresh_view()
+
+    # ------------------------------------------------------------------
+    # Waypoint (cue / POI) mutation slots
+    # ------------------------------------------------------------------
+
+    def _delete_waypoint(self, attr: str, index_val: int) -> None:
+        if self._active_index < 0 or not self._routes:
+            return
+        df: pl.DataFrame = getattr(self._routes[self._active_index].route, attr)
+        new_df = df.filter(pl.col("index") != index_val)
+        self._update_active_route(**{attr: new_df})
+
+    def _update_waypoint(self, attr: str, index_val: int, new_vals: dict) -> None:
+        if self._active_index < 0 or not self._routes:
+            return
+        df: pl.DataFrame = getattr(self._routes[self._active_index].route, attr)
+        rows = df.to_dicts()
+        for row in rows:
+            if row["index"] == index_val:
+                row.update(new_vals)
+                break
+        self._update_active_route(**{attr: pl.DataFrame(rows, schema=df.schema)})
+
+    def _update_active_route(self, **kwargs) -> None:
+        """Replace the active route's DataFrames with the given overrides."""
+        if self._active_index < 0 or not self._routes:
+            return
+        e = self._routes[self._active_index]
+        r = e.route
+        new_route = RouteData(
+            track_points=kwargs.get("track_points", r.track_points),
+            cues=kwargs.get("cues", r.cues),
+            pois=kwargs.get("pois", r.pois),
+            source_file=r.source_file,
+        )
+        self._routes[self._active_index] = RouteEntry(
+            route=new_route, color=e.color, label=e.label, visible=e.visible
+        )
+        self._set_dirty(True)
+        self._refresh_view()
 
     # ------------------------------------------------------------------
     # Row-selection slots

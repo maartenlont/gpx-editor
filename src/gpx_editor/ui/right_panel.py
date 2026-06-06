@@ -33,9 +33,14 @@ class RightPanel(QTabWidget):
 
         # Tabs 1, 2, 3: data tables
         self.track_table = DataFrameTableWidget(empty_track_points())
-        self.cue_table = DataFrameTableWidget(empty_cues())
+        self.cue_table = DataFrameTableWidget(
+            empty_cues(), editable_cols=["name", "cue_type", "description"]
+        )
         self.poi_table = DataFrameTableWidget(
-            empty_pois(), icon_col="symbol", icon_fn=poi_icon_for_row
+            empty_pois(),
+            icon_col="symbol",
+            icon_fn=poi_icon_for_row,
+            editable_cols=["name", "symbol", "description"],
         )
 
         self.addTab(self.route_list, "Routes")

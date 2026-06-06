@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QColor, QCursor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
+    QInputDialog,
+    QMenu,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -28,6 +30,7 @@ class RouteListWidget(QWidget):
     color_changed = Signal(int, str)
     visibility_changed = Signal(int, bool)
     route_removed = Signal(int)
+    route_renamed = Signal(int, str)  # (row_index, new_label)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -56,6 +59,9 @@ class RouteListWidget(QWidget):
             lambda current, _prev: self._on_current_row_changed(current.row())
         )
         self._table.itemChanged.connect(self._on_item_changed)
+
+        self._table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_context_menu)
 
     # ------------------------------------------------------------------
     # Public API
@@ -135,3 +141,27 @@ class RouteListWidget(QWidget):
             return
         hex_color: str = combo.currentData()
         self.color_changed.emit(row, hex_color)
+
+    def _on_context_menu(self, pos) -> None:
+        row = self._table.rowAt(pos.y())
+        if row < 0:
+            return
+
+        menu = QMenu(self._table)
+        rename_act = menu.addAction("Rename…")
+        remove_act = menu.addAction("Remove")
+
+        action = menu.exec(QCursor.pos())
+        if action is None:
+            return
+
+        if action == rename_act:
+            item = self._table.item(row, 2)
+            current = item.text() if item else ""
+            new_label, ok = QInputDialog.getText(
+                self._table, "Rename route", "Label:", text=current
+            )
+            if ok and new_label.strip():
+                self.route_renamed.emit(row, new_label.strip())
+        elif action == remove_act:
+            self.route_removed.emit(row)

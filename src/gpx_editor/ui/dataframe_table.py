@@ -6,8 +6,8 @@ from typing import Callable, Optional
 
 import polars as pl
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QHeaderView, QTableView, QVBoxLayout, QWidget
+from PySide6.QtGui import QCursor, QIcon
+from PySide6.QtWidgets import QHeaderView, QMenu, QTableView, QVBoxLayout, QWidget
 
 
 def _format(col: str, value: object) -> str:
@@ -85,16 +85,21 @@ class DataFrameTableWidget(QWidget):
     """QTableView backed by a DataFrameModel; emits row_selected(row, lat, lon)."""
 
     row_selected = Signal(int, float, float)
+    # index_val is the value of the hidden 'index' column (stable row identity)
+    row_deleted = Signal(int)
+    row_updated = Signal(int, object)  # (index_val, dict of new values)
 
     def __init__(
         self,
         df: Optional[pl.DataFrame] = None,
         icon_col: str | None = None,
         icon_fn: Callable[[dict], QIcon] | None = None,
+        editable_cols: list[str] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._icon_col = icon_col
+        self._editable_cols = editable_cols
         self._model = DataFrameModel(
             df if df is not None else pl.DataFrame(),
             icon_col=icon_col,
@@ -114,6 +119,9 @@ class DataFrameTableWidget(QWidget):
         layout.addWidget(self._view)
 
         self._view.selectionModel().currentRowChanged.connect(self._on_row_changed)
+
+        self._view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._view.customContextMenuRequested.connect(self._on_context_menu)
 
     def _fix_icon_col_width(self) -> None:
         if self._icon_col and self._icon_col in self._model._cols:
@@ -140,6 +148,32 @@ class DataFrameTableWidget(QWidget):
         self._view.selectRow(idx)
         self._view.selectionModel().blockSignals(False)
         self._view.scrollTo(self._model.index(idx, 0))
+
+    def _on_context_menu(self, pos) -> None:
+        idx = self._view.indexAt(pos)
+        if not idx.isValid():
+            return
+        if "index" not in self._model._df.columns:
+            return
+        row = idx.row()
+        index_val = int(self._model._df["index"][row])
+
+        menu = QMenu(self._view)
+        edit_act = menu.addAction("Edit properties…") if self._editable_cols else None
+        delete_act = menu.addAction("Delete")
+
+        action = menu.exec(QCursor.pos())
+        if action is None:
+            return
+
+        if edit_act is not None and action == edit_act:
+            from gpx_editor.ui.row_edit_dialog import RowEditDialog
+            row_data = self._model._df.row(row, named=True)
+            dlg = RowEditDialog(row_data, self._editable_cols, parent=self._view)
+            if dlg.exec() == RowEditDialog.DialogCode.Accepted:
+                self.row_updated.emit(index_val, dlg.get_values())
+        elif action == delete_act:
+            self.row_deleted.emit(index_val)
 
     def _on_row_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         if not current.isValid():
