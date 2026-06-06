@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -15,6 +15,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
 )
+
+_RECENT_KEY = "recent_files"
+_RECENT_MAX = 5
+_QSETTINGS_ARGS = ("gpx-editor", "gpx-editor")
 
 from gpx_editor.io._distance import nearest_index
 from gpx_editor.io.gpx_reader import read_gpx
@@ -95,6 +99,9 @@ class MainWindow(QMainWindow):
         open_act.setShortcut("Ctrl+O")
         open_act.triggered.connect(self._open_file)
 
+        self._recent_menu = file_menu.addMenu("Open &Recent")
+        self._rebuild_recent_menu()
+
         self._clear_act = file_menu.addAction("&Clear All")
         self._clear_act.triggered.connect(self._clear_all)
 
@@ -129,27 +136,87 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        start = str(self._open_path.parent) if self._open_path else ""
+        paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Open GPX / TCX file",
-            str(self._open_path.parent) if self._open_path else "",
+            "Open GPX / TCX file(s)",
+            start,
             "Route files (*.gpx *.tcx);;GPX files (*.gpx);;TCX files (*.tcx)",
         )
-        if not path:
-            return
-        route = self._read_file(Path(path))
+        for path in paths:
+            self._load_path(Path(path))
+
+    def _load_path(self, path: Path) -> bool:
+        """Load a single file, append it as a new route, return True on success."""
+        route = self._read_file(path)
         if route is None:
-            return
+            return False
         used_colors = [e.color for e in self._routes]
         color = next_color(used_colors)
-        label = Path(path).stem
-        entry = RouteEntry(route=route, color=color, label=label)
+        entry = RouteEntry(route=route, color=color, label=path.stem)
         self._routes.append(entry)
         self._active_index = len(self._routes) - 1
-        self._open_path = Path(path)
+        self._open_path = path
         self._merge_act.setEnabled(len(self._routes) >= 2)
+        self._push_recent(path)
         self._refresh_view()
         self._set_dirty(False)
+        return True
+
+    # ------------------------------------------------------------------
+    # Recent-files helpers
+    # ------------------------------------------------------------------
+
+    def _push_recent(self, path: Path) -> None:
+        s = QSettings(*_QSETTINGS_ARGS)
+        recent: list[str] = s.value(_RECENT_KEY, []) or []
+        path_str = str(path)
+        if path_str in recent:
+            recent.remove(path_str)
+        recent.insert(0, path_str)
+        s.setValue(_RECENT_KEY, recent[:_RECENT_MAX])
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self) -> None:
+        self._recent_menu.clear()
+        s = QSettings(*_QSETTINGS_ARGS)
+        recent: list[str] = s.value(_RECENT_KEY, []) or []
+        if not recent:
+            act = self._recent_menu.addAction("No recent files")
+            act.setEnabled(False)
+            return
+        for path_str in recent:
+            p = Path(path_str)
+            label = f"{p.parent.name}/{p.name}" if p.parent.name else p.name
+            act = self._recent_menu.addAction(label)
+            act.setToolTip(path_str)
+            act.triggered.connect(lambda checked=False, ps=path_str: self._open_recent(ps))
+        self._recent_menu.addSeparator()
+        clear_act = self._recent_menu.addAction("Clear Recent Files")
+        clear_act.triggered.connect(self._clear_recent)
+
+    def _open_recent(self, path_str: str) -> None:
+        path = Path(path_str)
+        if not path.exists():
+            QMessageBox.warning(
+                self, "File not found",
+                f"'{path.name}' no longer exists at:\n{path_str}",
+            )
+            self._remove_recent(path_str)
+            return
+        self._load_path(path)
+
+    def _remove_recent(self, path_str: str) -> None:
+        s = QSettings(*_QSETTINGS_ARGS)
+        recent: list[str] = s.value(_RECENT_KEY, []) or []
+        if path_str in recent:
+            recent.remove(path_str)
+            s.setValue(_RECENT_KEY, recent)
+        self._rebuild_recent_menu()
+
+    def _clear_recent(self) -> None:
+        QSettings(*_QSETTINGS_ARGS).remove(_RECENT_KEY)
+        self._rebuild_recent_menu()
 
     def _clear_all(self) -> None:
         self._routes = []
@@ -391,33 +458,58 @@ class MainWindow(QMainWindow):
         category = dlg.category()
         buffer_m = dlg.buffer_m()
         tags = OSM_CATEGORIES[category]
+        tp = route.track_points
 
-        south, west, north, east = track_bbox(route.track_points, buffer_m)
-        # Round bbox to 3 decimal places (~110 m) for cache key stability
-        cache_key = (category, round(south, 3), round(west, 3), round(north, 3), round(east, 3))
+        def _run_query(viewport):
+            if viewport:
+                vs, vw, vn, ve = viewport
+                # Use only track points that fall inside the current viewport, then
+                # expand by the buffer.  This keeps the Overpass bbox tight even for
+                # very long routes where the user is zoomed into a small section.
+                visible_tp = tp.filter(
+                    (pl.col("lat") >= vs) & (pl.col("lat") <= vn) &
+                    (pl.col("lon") >= vw) & (pl.col("lon") <= ve)
+                )
+                if len(visible_tp) == 0:
+                    self._status_label.setText(
+                        "No track visible in current map view — pan to the route first."
+                    )
+                    return
+                qs, qw, qn, qe = track_bbox(visible_tp, buffer_m)
+                # Clip to the viewport so we never query beyond what is visible.
+                qs, qw = max(qs, vs), max(qw, vw)
+                qn, qe = min(qn, vn), min(qe, ve)
+            else:
+                qs, qw, qn, qe = track_bbox(tp, buffer_m)
 
-        if cache_key in self._osm_cache:
-            df = self._osm_cache[cache_key]
-            cached = True
-        else:
-            self._status_label.setText(f"Querying OSM for '{category}'…")
-            self.statusBar().repaint()
-            try:
-                df = query_osm_pois(south, west, north, east, tags)
-            except Exception as exc:  # noqa: BLE001
-                QMessageBox.critical(self, "OSM query failed", str(exc))
-                self._update_status()
-                return
-            self._osm_cache[cache_key] = df
-            cached = False
+            cache_key = (
+                category,
+                round(qs, 3), round(qw, 3), round(qn, 3), round(qe, 3),
+            )
+            if cache_key in self._osm_cache:
+                df = self._osm_cache[cache_key]
+                cached = True
+            else:
+                self._status_label.setText(f"Querying OSM for '{category}'…")
+                self.statusBar().repaint()
+                try:
+                    df = query_osm_pois(qs, qw, qn, qe, tags)
+                except Exception as exc:  # noqa: BLE001
+                    QMessageBox.critical(self, "OSM query failed", str(exc))
+                    self._update_status()
+                    return
+                self._osm_cache[cache_key] = df
+                cached = False
 
-        n = len(df)
-        suffix = " (cached)" if cached else ""
-        self._status_label.setText(
-            f"Found {n} OSM POI{'s' if n != 1 else ''}{suffix}"
-            " — right-click a marker to add to track"
-        )
-        self.map_widget.load_osm_pois(df)
+            n = len(df)
+            suffix = " (cached)" if cached else ""
+            self._status_label.setText(
+                f"Found {n} OSM POI{'s' if n != 1 else ''}{suffix}"
+                " — click a marker to add to track"
+            )
+            self.map_widget.load_osm_pois(df)
+
+        self.map_widget.get_viewport_bbox(_run_query)
 
     def _on_osm_poi_add(
         self, lat: float, lon: float, name: str, description: str, symbol: str

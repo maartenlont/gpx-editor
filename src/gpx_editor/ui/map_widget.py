@@ -77,6 +77,21 @@ _ADD_POI_JS = """
 }());
 """
 
+# OSM symbol → pictogram mapping for map markers
+_OSM_SYMBOL_PICTOGRAM: dict[str, str] = {
+    "water":       "💧",
+    "fuel":        "⛽",
+    "lodging":     "🛏️",
+    "convenience": "🏪",
+    "shopping":    "🛒",
+    "restaurant":  "🍽️",
+    "cafe":        "☕",
+    "parking":     "🅿️",
+    "camping":     "⛺",
+    "pharmacy":    "💊",
+    "generic":     "📍",
+}
+
 # Injected once after the map is ready: creates the OSM overlay layer and
 # a global helper so popup buttons can reach the Python backend.
 _OSM_LAYER_JS = """
@@ -239,62 +254,72 @@ class MapWidget(QWebEngineView):
                 "if (window._osmLayer) { window._osmLayer.clearLayers(); }"
             )
 
+    def get_viewport_bbox(self, callback) -> None:
+        """Call callback(south, west, north, east) with the current map viewport, or None."""
+        if not self._map_ready:
+            callback(None)
+            return
+        self.page().runJavaScript(
+            "(function() {"
+            "  if (!window._gpxMap) return null;"
+            "  var b = window._gpxMap.getBounds();"
+            "  return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()];"
+            "})()",
+            callback,
+        )
+
     def _inject_osm_pois(self) -> None:
         """(Re-)inject the stored OSM overlay into the live map."""
         if not self._map_ready or self._osm_df is None:
             return
-        self.page().runJavaScript(
-            "if (window._osmLayer) { window._osmLayer.clearLayers(); }"
-        )
         rows = self._osm_df.to_dicts()
-        if not rows:
-            return
-        js_parts = []
-        for row in rows:
-            lat = row["lat"]
-            lon = row["lon"]
-            name_s = row["name"] or ""
-            desc_s = row["description"] or ""
-            sym_s = row["symbol"] or "generic"
-
-            # Embed all string data in a JS object literal — no inline onclick,
-            # so HTML attribute quoting cannot break the button handler.
-            data_j = json.dumps({
-                "lat": lat, "lon": lon,
-                "name": name_s, "desc": desc_s, "symbol": sym_s,
-            })
-
-            lines = [
-                f"<b>{_html.escape(name_s)}</b>" if name_s else "<i>(unnamed)</i>",
-            ]
-            if desc_s:
-                lines.append(_html.escape(desc_s))
-            lines.append(f"<i>Type: {_html.escape(sym_s)}</i>")
-            lines.append(
-                '<button class="osm-add-btn" '
-                'style="margin-top:6px;padding:3px 8px;cursor:pointer">'
-                '+ Add to Track</button>'
-            )
-            popup_html_j = json.dumps("<br>".join(lines))
-
-            js_parts.append(
-                f"(function() {{"
-                f"  var d = {data_j};"
-                f"  var m = L.circleMarker([d.lat, d.lon], "
-                f"    {{radius:8, color:'#1565C0', fillColor:'#42A5F5',"
-                f"     fillOpacity:0.85, weight:2}});"
-                f"  m.bindPopup({popup_html_j}, {{maxWidth:240}});"
-                f"  m.on('popupopen', function() {{"
-                f"    var btn = m.getPopup().getElement()"
-                f"      .querySelector('.osm-add-btn');"
-                f"    if (btn) btn.addEventListener('click', function() {{"
-                f"      window._addOsmPoi(d.lat, d.lon, d.name, d.desc, d.symbol);"
-                f"    }});"
-                f"  }});"
-                f"  m.addTo(window._osmLayer);"
-                f"}})();"
-            )
-        self.page().runJavaScript("\n".join(js_parts))
+        # Build a single JSON array; JS does the rest in one forEach — much faster
+        # than one runJavaScript call per marker.
+        data = [
+            {
+                "lat": r["lat"], "lon": r["lon"],
+                "name": r["name"] or "", "desc": r["description"] or "",
+                "symbol": r["symbol"] or "generic",
+                "pictogram": _OSM_SYMBOL_PICTOGRAM.get(r["symbol"] or "generic", "📍"),
+            }
+            for r in rows
+        ]
+        data_j = json.dumps(data)
+        js = f"""
+(function() {{
+  if (window._osmLayer) window._osmLayer.clearLayers();
+  var pois = {data_j};
+  pois.forEach(function(d) {{
+    var name = d.name || '(unnamed)';
+    var tipHtml  = '<b>' + name + '</b><br><i>' + d.symbol + '</i>';
+    var popLines = ['<b>' + name + '</b>'];
+    if (d.desc) popLines.push(d.desc);
+    popLines.push('<i>Type: ' + d.symbol + '</i>');
+    popLines.push('<button class="osm-add-btn" style="margin-top:6px;padding:3px 8px;cursor:pointer">+ Add to Track</button>');
+    var icon = L.divIcon({{
+      html: '<div style="display:flex;align-items:center;justify-content:center;' +
+            'width:28px;height:28px;border-radius:50%;background:#1565C0;' +
+            'border:2px solid white;box-shadow:0 2px 5px rgba(0,0,0,0.3);' +
+            'font-size:14px;">' + d.pictogram + '</div>',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      popupAnchor: [0, -14],
+      className: ''
+    }});
+    var m = L.marker([d.lat, d.lon], {{ icon: icon }});
+    m.bindTooltip(tipHtml, {{sticky:true}});
+    m.bindPopup(popLines.join('<br>'), {{maxWidth:240}});
+    m.on('popupopen', function() {{
+      var btn = m.getPopup().getElement().querySelector('.osm-add-btn');
+      if (btn) btn.addEventListener('click', function() {{
+        window._addOsmPoi(d.lat, d.lon, d.name, d.desc, d.symbol);
+      }});
+    }});
+    m.addTo(window._osmLayer);
+  }});
+}})();
+"""
+        self.page().runJavaScript(js)
 
     # ------------------------------------------------------------------
     # Internal helpers

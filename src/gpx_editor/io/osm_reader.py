@@ -77,7 +77,7 @@ def query_osm_pois(
     north: float,
     east: float,
     tags: list[tuple[str, str]],
-    timeout: int = 25,
+    timeout: int = 60,
 ) -> pl.DataFrame:
     """Query Overpass API for nodes/ways matching the given (key, value) tags.
 
