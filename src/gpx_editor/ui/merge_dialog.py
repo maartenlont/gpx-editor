@@ -1,48 +1,35 @@
-"""Dialog for merging cues and POIs from a source route into a target route."""
+"""Dialog for merging cues and POIs from one route into another."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
 )
 
 from gpx_editor.logic.merge import copy_cues_pois
 from gpx_editor.models.route import RouteData
+from gpx_editor.models.route_entry import RouteEntry
 
 
 class MergeDialog(QDialog):
-    """Non-blocking merge configuration dialog.
+    """Merge dialog for multi-route support.
 
-    Emits ``preview_requested(RouteData)`` whenever the user wants to see the
-    result of the current settings.  The parent window should connect this
-    signal to its ``set_route`` method so the map and tables update live.
-
-    On ``accept`` the last emitted route is already applied.
-    On ``reject`` the caller is responsible for reverting to the original route.
+    Takes a list of RouteEntry objects. The user picks a source (copy FROM)
+    and a target (copy INTO). On Apply the merged route is stored and the
+    dialog accepts. The caller retrieves the result via ``get_result()``.
     """
 
-    preview_requested = Signal(RouteData)
-
-    def __init__(
-        self,
-        source: RouteData,
-        target: RouteData,
-        parent=None,
-    ) -> None:
+    def __init__(self, entries: list[RouteEntry], parent=None) -> None:
         super().__init__(parent)
-        self._source = source
-        self._target = target
+        self._entries = entries
+        self._result: tuple[RouteData, str] | None = None
         self._setup_ui()
         self.setWindowTitle("Merge Cues & POIs")
         self.setMinimumWidth(440)
@@ -55,28 +42,23 @@ class MergeDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        # Route info
-        info_box = QGroupBox("Routes")
-        info_form = QFormLayout(info_box)
-        source_name = Path(self._source.source_file).name if self._source.source_file else "—"
-        target_name = Path(self._target.source_file).name if self._target.source_file else "—"
-        info_form.addRow("Copy cues/POIs from:", QLabel(f"<b>{source_name}</b>"))
-        info_form.addRow(
-            "",
-            QLabel(
-                f"{len(self._source.cues)} cues · {len(self._source.pois)} POIs"
-            ),
-        )
-        info_form.addRow("Into track from:", QLabel(f"<b>{target_name}</b>"))
-        info_form.addRow(
-            "",
-            QLabel(
-                f"{len(self._target.track_points):,} track points · "
-                f"{len(self._target.cues)} existing cues · "
-                f"{len(self._target.pois)} existing POIs"
-            ),
-        )
-        layout.addWidget(info_box)
+        # Source / target selection
+        routes_box = QGroupBox("Routes")
+        routes_form = QFormLayout(routes_box)
+
+        self._source_combo = QComboBox()
+        self._target_combo = QComboBox()
+        for entry in self._entries:
+            self._source_combo.addItem(entry.label)
+            self._target_combo.addItem(entry.label)
+
+        # Default: source = 0, target = 1 (if available)
+        self._source_combo.setCurrentIndex(0)
+        self._target_combo.setCurrentIndex(1 if len(self._entries) > 1 else 0)
+
+        routes_form.addRow("Copy cues/POIs from:", self._source_combo)
+        routes_form.addRow("Into track of:", self._target_combo)
+        layout.addWidget(routes_box)
 
         # Threshold
         threshold_box = QGroupBox("Settings")
@@ -90,47 +72,60 @@ class MergeDialog(QDialog):
         threshold_form.addRow("Snap radius:", self._threshold_spin)
         layout.addWidget(threshold_box)
 
-        # Result summary label
-        self._result_label = QLabel("")
-        self._result_label.setWordWrap(True)
-        layout.addWidget(self._result_label)
+        # Warning / result label
+        self._info_label = QLabel("")
+        self._info_label.setWordWrap(True)
+        layout.addWidget(self._info_label)
 
         # Buttons
-        btn_row = QHBoxLayout()
-        self._preview_btn = QPushButton("Preview")
-        self._preview_btn.clicked.connect(self._on_preview)
-        btn_row.addWidget(self._preview_btn)
-        btn_row.addStretch()
-
         self._button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply
             | QDialogButtonBox.StandardButton.Cancel
         )
-        apply_btn = self._button_box.button(QDialogButtonBox.StandardButton.Apply)
-        apply_btn.setDefault(True)
-        apply_btn.clicked.connect(self._on_apply)
+        self._apply_btn = self._button_box.button(QDialogButtonBox.StandardButton.Apply)
+        self._apply_btn.setDefault(True)
+        self._apply_btn.clicked.connect(self._on_apply)
         self._button_box.rejected.connect(self.reject)
-        btn_row.addWidget(self._button_box)
-        layout.addLayout(btn_row)
+        layout.addWidget(self._button_box)
+
+        # Validate initial state and connect change signals
+        self._validate()
+        self._source_combo.currentIndexChanged.connect(self._validate)
+        self._target_combo.currentIndexChanged.connect(self._validate)
 
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
 
-    def _run_merge(self) -> RouteData:
-        return copy_cues_pois(self._source, self._target, self._threshold_spin.value())
-
-    def _on_preview(self) -> None:
-        merged = self._run_merge()
-        added_cues = len(merged.cues) - len(self._target.cues)
-        added_pois = len(merged.pois) - len(self._target.pois)
-        self._result_label.setText(
-            f"Preview: <b>{added_cues}</b> cue(s) and <b>{added_pois}</b> POI(s) "
-            f"would be copied within {self._threshold_spin.value():.0f} m."
-        )
-        self.preview_requested.emit(merged)
+    def _validate(self) -> None:
+        """Enable/disable Apply based on source != target."""
+        src_idx = self._source_combo.currentIndex()
+        tgt_idx = self._target_combo.currentIndex()
+        if src_idx == tgt_idx:
+            self._info_label.setText(
+                "<span style='color:red;'>Source and target must be different routes.</span>"
+            )
+            self._apply_btn.setEnabled(False)
+        else:
+            self._info_label.setText("")
+            self._apply_btn.setEnabled(True)
 
     def _on_apply(self) -> None:
-        merged = self._run_merge()
-        self.preview_requested.emit(merged)
+        src_idx = self._source_combo.currentIndex()
+        tgt_idx = self._target_combo.currentIndex()
+        if src_idx == tgt_idx:
+            return
+        source = self._entries[src_idx]
+        target = self._entries[tgt_idx]
+        merged = copy_cues_pois(source.route, target.route, self._threshold_spin.value())
+        label = f"Merged — {target.label}"
+        self._result = (merged, label)
         self.accept()
+
+    # ------------------------------------------------------------------
+    # Public result access
+    # ------------------------------------------------------------------
+
+    def get_result(self) -> tuple[RouteData, str] | None:
+        """Return ``(merged_route, label)`` if accepted, else ``None``."""
+        return self._result

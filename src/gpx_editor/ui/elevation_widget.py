@@ -11,6 +11,7 @@ from matplotlib.lines import Line2D
 from PySide6.QtCore import Signal
 
 from gpx_editor.models.route import RouteData
+from gpx_editor.models.route_entry import RouteEntry
 
 
 class ElevationWidget(FigureCanvasQTAgg):
@@ -30,24 +31,53 @@ class ElevationWidget(FigureCanvasQTAgg):
     # Public API
     # ------------------------------------------------------------------
 
-    def load_route(self, route: RouteData) -> None:
+    def load_routes(self, entries: list[RouteEntry], active_index: int) -> None:
+        """Plot all visible routes; active route at full opacity, others dimmed."""
         self._ax.clear()
         self._cursor = None
         self._clear_axes()
-        tp = route.track_points
-        if len(tp) == 0 or tp["elevation"].is_null().all():
+
+        visible = [(i, e) for i, e in enumerate(entries) if e.visible]
+        if not visible:
             self.draw()
             return
 
-        dist_km = [d / 1000.0 for d in tp["distance"].to_list()]
-        elev = [e if e is not None else float("nan") for e in tp["elevation"].to_list()]
+        max_dist_km = 0.0
+        active_entry = entries[active_index] if 0 <= active_index < len(entries) else None
 
-        self._ax.plot(dist_km, elev, color="#1565C0", linewidth=1.5, zorder=2)
-        self._ax.fill_between(dist_km, elev, alpha=0.25, color="#1565C0", zorder=1)
-        self._cursor = self._ax.axvline(
-            x=0, color="#E53935", linewidth=1.2, linestyle="--", visible=False, zorder=3
-        )
-        self._ax.set_xlim(0, max(dist_km) if dist_km else 1)
+        for i, entry in visible:
+            tp = entry.route.track_points
+            if len(tp) == 0 or tp["elevation"].is_null().all():
+                continue
+
+            dist_km = [d / 1000.0 for d in tp["distance"].to_list()]
+            elev = [e if e is not None else float("nan") for e in tp["elevation"].to_list()]
+
+            is_active = (i == active_index)
+            if is_active:
+                lw = 1.5
+                alpha_line = 1.0
+                alpha_fill = 0.15
+            else:
+                lw = 0.8
+                alpha_line = 0.35
+                alpha_fill = 0.0  # no fill for inactive routes
+
+            self._ax.plot(dist_km, elev, color=entry.color, linewidth=lw, alpha=alpha_line, zorder=2)
+            if is_active and alpha_fill > 0:
+                self._ax.fill_between(dist_km, elev, alpha=alpha_fill, color=entry.color, zorder=1)
+
+            if dist_km:
+                max_dist_km = max(max_dist_km, max(dist_km))
+
+        # Add axvline cursor for the active entry context
+        if active_entry is not None:
+            self._cursor = self._ax.axvline(
+                x=0, color="#E53935", linewidth=1.2, linestyle="--", visible=False, zorder=3
+            )
+
+        if max_dist_km > 0:
+            self._ax.set_xlim(0, max_dist_km)
         self.draw()
 
     def move_cursor(self, distance_m: float) -> None:

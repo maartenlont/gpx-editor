@@ -39,13 +39,13 @@
 - [x] README with install, run, workflow, and shortcut docs
 
 ### Phase 7 — Multi-route support
-- [ ] `models/route_entry.py` — `RouteEntry` dataclass wrapping `RouteData` + display color
-- [ ] `ui/route_list_widget.py` — routes panel: list of loaded routes, color swatch, remove button
-- [ ] `ui/right_panel.py` — add "Routes" tab containing the route list widget
-- [ ] `ui/map_widget.py` — render all loaded routes simultaneously; each polyline in its own color; cue/POI markers only for the active route
-- [ ] `ui/elevation_widget.py` — overlay elevation profiles of all routes; active route highlighted
-- [ ] `main_window.py` — File → Open adds to route list instead of replacing; switching active route refreshes tables and elevation cursor
-- [ ] Save As and Merge operate on the active route
+- [x] `models/route_entry.py` — `RouteEntry` dataclass wrapping `RouteData` + display color
+- [x] `ui/route_list_widget.py` — routes panel: list of loaded routes, color swatch, remove button
+- [x] `ui/right_panel.py` — add "Routes" tab containing the route list widget
+- [x] `ui/map_widget.py` — render all loaded routes simultaneously; each polyline in its own color; cue/POI markers only for the active route
+- [x] `ui/elevation_widget.py` — overlay elevation profiles of all routes; active route highlighted
+- [x] `main_window.py` — File → Open adds to route list instead of replacing; switching active route refreshes tables and elevation cursor
+- [x] Save As and Merge operate on the active route
 
 ---
 

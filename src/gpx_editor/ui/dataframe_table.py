@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 import polars as pl
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QHeaderView, QTableView, QVBoxLayout, QWidget
 
 
@@ -26,12 +27,16 @@ class DataFrameModel(QAbstractTableModel):
         self,
         df: pl.DataFrame,
         hidden_cols: tuple[str, ...] = ("index",),
+        icon_col: str | None = None,
+        icon_fn: Callable[[dict], QIcon] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._hidden = set(hidden_cols)
         self._df = df
         self._cols = [c for c in df.columns if c not in self._hidden]
+        self._icon_col = icon_col
+        self._icon_fn = icon_fn
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return len(self._df)
@@ -39,11 +44,15 @@ class DataFrameModel(QAbstractTableModel):
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return len(self._cols)
 
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole) -> Optional[str]:
+    def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid():
             return None
+        col = self._cols[index.column()]
+        if role == Qt.DecorationRole and col == self._icon_col and self._icon_fn is not None:
+            return self._icon_fn(self._df.row(index.row(), named=True))
         if role == Qt.DisplayRole:
-            col = self._cols[index.column()]
+            if col == self._icon_col and self._icon_fn is not None:
+                return None  # icon column: no text, decoration only
             value = self._df[index.row(), col]
             return _format(col, value)
         return None
@@ -69,14 +78,28 @@ class DataFrameModel(QAbstractTableModel):
         return float(self._df["lat"][row]), float(self._df["lon"][row])
 
 
+_ICON_COL_WIDTH = 26  # pixels for an icon-only column
+
+
 class DataFrameTableWidget(QWidget):
     """QTableView backed by a DataFrameModel; emits row_selected(row, lat, lon)."""
 
     row_selected = Signal(int, float, float)
 
-    def __init__(self, df: Optional[pl.DataFrame] = None, parent=None) -> None:
+    def __init__(
+        self,
+        df: Optional[pl.DataFrame] = None,
+        icon_col: str | None = None,
+        icon_fn: Callable[[dict], QIcon] | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
-        self._model = DataFrameModel(df if df is not None else pl.DataFrame())
+        self._icon_col = icon_col
+        self._model = DataFrameModel(
+            df if df is not None else pl.DataFrame(),
+            icon_col=icon_col,
+            icon_fn=icon_fn,
+        )
         self._view = QTableView()
         self._view.setModel(self._model)
         self._view.setSelectionBehavior(QTableView.SelectRows)
@@ -92,8 +115,16 @@ class DataFrameTableWidget(QWidget):
 
         self._view.selectionModel().currentRowChanged.connect(self._on_row_changed)
 
+    def _fix_icon_col_width(self) -> None:
+        if self._icon_col and self._icon_col in self._model._cols:
+            idx = self._model._cols.index(self._icon_col)
+            hdr = self._view.horizontalHeader()
+            hdr.setSectionResizeMode(idx, QHeaderView.Fixed)
+            self._view.setColumnWidth(idx, _ICON_COL_WIDTH)
+
     def load(self, df: pl.DataFrame) -> None:
         self._model.load(df)
+        self._fix_icon_col_width()
 
     def select_nearest_distance(self, distance_m: float) -> None:
         """Select and scroll to the row whose distance is closest to *distance_m*.

@@ -13,6 +13,13 @@ from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from gpx_editor.models.route import RouteData
+from gpx_editor.models.route_entry import RouteEntry
+from gpx_editor.ui.poi_icons import (
+    CUE_ICON as _CUE_ICON,
+    DEFAULT_CUE_ICON as _DEFAULT_CUE_ICON,
+    POI_NAME_ICON as _POI_NAME_ICON,
+    DEFAULT_POI_ICON as _DEFAULT_POI_ICON,
+)
 
 _PLACEHOLDER_HTML = """
 <html>
@@ -24,62 +31,6 @@ _PLACEHOLDER_HTML = """
 </body>
 </html>
 """
-
-# cue_type (lower-case) → (Bootstrap Glyphicon name, folium color)
-_CUE_ICON: dict[str, tuple[str, str]] = {
-    "left":          ("arrow-left",  "red"),
-    "turn left":     ("arrow-left",  "red"),
-    "sharp left":    ("arrow-left",  "darkred"),
-    "slight left":   ("arrow-left",  "orange"),
-    "bear left":     ("arrow-left",  "orange"),
-    "fork left":     ("arrow-left",  "orange"),
-    "right":         ("arrow-right", "red"),
-    "turn right":    ("arrow-right", "red"),
-    "sharp right":   ("arrow-right", "darkred"),
-    "slight right":  ("arrow-right", "orange"),
-    "bear right":    ("arrow-right", "orange"),
-    "fork right":    ("arrow-right", "orange"),
-    "straight":      ("arrow-up",    "blue"),
-    "continue":      ("arrow-up",    "blue"),
-    "u-turn":        ("repeat",      "darkred"),
-    "uturn":         ("repeat",      "darkred"),
-    "roundabout":    ("refresh",     "purple"),
-}
-_DEFAULT_CUE_ICON = ("map-marker", "red")
-
-# POI name (lower-case) → (Bootstrap Glyphicon name, folium color)
-_POI_NAME_ICON: dict[str, tuple[str, str]] = {
-    # Navigation cues
-    "start":         ("flag",        "green"),
-    "right":         ("arrow-right", "red"),
-    "left":          ("arrow-left",  "red"),
-    "sharp right":   ("arrow-right", "darkred"),
-    "sharp left":    ("arrow-left",  "darkred"),
-    "slight right":  ("arrow-right", "orange"),
-    "slight left":   ("arrow-left",  "orange"),
-    # Climb categories (cadetblue → blue → orange → red = easiest → hardest)
-    "4th category":  ("chevron-up",  "cadetblue"),
-    "3rd category":  ("chevron-up",  "blue"),
-    "2nd category":  ("chevron-up",  "orange"),
-    "1st category":  ("chevron-up",  "red"),
-    # Fuel / pump stations
-    "bp":            ("flash",       "darkgreen"),
-    "omv":           ("flash",       "red"),
-    # Points of interest
-    "coffee":        ("coffee",      "beige"),
-    "food":          ("cutlery",     "beige"),
-    "restaurant":    ("cutlery",     "beige"),
-    "water":         ("tint",        "blue"),
-    "water fountain":("tint",        "blue"),
-    "parking":       ("car",         "gray"),
-    "hospital":      ("plus-sign",   "red"),
-    "bike":          ("wrench",      "darkblue"),
-    "photo":         ("camera",      "purple"),
-    "summit":        ("flag",        "darkred"),
-    "waypoint":      ("map-marker",  "green"),
-    "generic":       ("info-sign",   "green"),
-}
-_DEFAULT_POI_ICON = ("info-sign", "green")
 
 # Maximum polyline points sent to Leaflet; larger tracks are downsampled.
 _MAX_POLYLINE_PTS = 5_000
@@ -119,24 +70,68 @@ class MapWidget(QWebEngineView):
     # Public API
     # ------------------------------------------------------------------
 
-    def load_route(self, route: RouteData) -> None:
-        tp = route.track_points
-        if len(tp) == 0:
+    def load_routes(self, entries: list[RouteEntry], active_index: int) -> None:
+        """Render all visible routes; cue/POI markers only for the active entry."""
+        visible = [e for e in entries if e.visible]
+        if not visible:
             self.setHtml(_PLACEHOLDER_HTML)
             return
 
-        lats = tp["lat"].to_list()
-        lons = tp["lon"].to_list()
-        center = [sum(lats) / len(lats), sum(lons) / len(lons)]
+        # Collect all track points from visible entries for bounds/center
+        all_lats: list[float] = []
+        all_lons: list[float] = []
+        for entry in visible:
+            tp = entry.route.track_points
+            if len(tp) > 0:
+                all_lats.extend(tp["lat"].to_list())
+                all_lons.extend(tp["lon"].to_list())
 
+        if not all_lats:
+            self.setHtml(_PLACEHOLDER_HTML)
+            return
+
+        center = [sum(all_lats) / len(all_lats), sum(all_lons) / len(all_lons)]
         m = folium.Map(location=center, zoom_start=13, control_scale=True)
 
-        # Track polyline — simplified for large files
-        s_lats, s_lons = _simplify(lats, lons)
-        folium.PolyLine(
-            list(zip(s_lats, s_lons)), color="#1565C0", weight=3, opacity=0.85
-        ).add_to(m)
+        # Draw one PolyLine per visible entry
+        for entry in visible:
+            tp = entry.route.track_points
+            if len(tp) == 0:
+                continue
+            lats = tp["lat"].to_list()
+            lons = tp["lon"].to_list()
+            s_lats, s_lons = _simplify(lats, lons)
+            folium.PolyLine(
+                list(zip(s_lats, s_lons)),
+                color=entry.color,
+                weight=3,
+                opacity=0.85,
+            ).add_to(m)
 
+        # Draw cue/POI markers only for the active entry
+        if 0 <= active_index < len(entries):
+            active_entry = entries[active_index]
+            if active_entry.visible:
+                self._add_markers(m, active_entry.route)
+
+        # Fit map to track bounds
+        m.fit_bounds([[min(all_lats), min(all_lons)], [max(all_lats), max(all_lons)]])
+
+        self._map_js_name = m.get_name()
+        self._save_and_load(m)
+
+    def zoom_to(self, lat: float, lon: float, zoom: int = 16) -> None:
+        if self._map_ready:
+            self.page().runJavaScript(
+                f"if (window._gpxMap) {{ window._gpxMap.setView([{lat}, {lon}], {zoom}); }}"
+            )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _add_markers(self, m: folium.Map, route: RouteData) -> None:
+        """Add cue and POI markers from *route* to the folium map *m*."""
         # Cue markers
         for row in route.cues.iter_rows(named=True):
             key = row["cue_type"].lower() if row["cue_type"] else ""
@@ -162,22 +157,6 @@ class MapWidget(QWebEngineView):
                 tooltip=row["name"],
                 icon=folium.Icon(color=color, icon=icon_name),
             ).add_to(m)
-
-        # Fit map to track bounds
-        m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
-
-        self._map_js_name = m.get_name()
-        self._save_and_load(m)
-
-    def zoom_to(self, lat: float, lon: float, zoom: int = 16) -> None:
-        if self._map_ready:
-            self.page().runJavaScript(
-                f"if (window._gpxMap) {{ window._gpxMap.setView([{lat}, {lon}], {zoom}); }}"
-            )
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _save_and_load(self, m: folium.Map) -> None:
         if self._tmp_path and Path(self._tmp_path).exists():

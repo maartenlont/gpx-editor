@@ -20,7 +20,7 @@ from gpx_editor.io.gpx_reader import read_gpx
 from gpx_editor.io.gpx_writer import write_gpx
 from gpx_editor.io.tcx_reader import read_tcx
 from gpx_editor.io.tcx_writer import write_tcx
-from gpx_editor.models.route import RouteData
+from gpx_editor.models.route_entry import RouteEntry, next_color
 from gpx_editor.ui.elevation_widget import ElevationWidget
 from gpx_editor.ui.map_widget import MapWidget
 from gpx_editor.ui.right_panel import RightPanel
@@ -29,9 +29,8 @@ from gpx_editor.ui.right_panel import RightPanel
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self._route: RouteData | None = None
-        self._second_route: RouteData | None = None
-        self._pre_merge_route: RouteData | None = None
+        self._routes: list[RouteEntry] = []
+        self._active_index: int = -1
         self._open_path: Path | None = None
         self._dirty = False
         self._setup_ui()
@@ -69,6 +68,12 @@ class MainWindow(QMainWindow):
         self.right_panel.poi_table.row_selected.connect(self._on_waypoint_row_selected)
         self.elevation_widget.location_clicked.connect(self._on_elevation_clicked)
 
+        # Wire route list signals
+        self.right_panel.route_list.active_changed.connect(self._on_route_active_changed)
+        self.right_panel.route_list.color_changed.connect(self._on_route_color_changed)
+        self.right_panel.route_list.visibility_changed.connect(self._on_route_visibility_changed)
+        self.right_panel.route_list.route_removed.connect(self._on_route_removed)
+
     def _setup_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
 
@@ -76,9 +81,10 @@ class MainWindow(QMainWindow):
         open_act.setShortcut("Ctrl+O")
         open_act.triggered.connect(self._open_file)
 
-        self._open_second_act = file_menu.addAction("Open &Second File…")
-        self._open_second_act.setEnabled(False)
-        self._open_second_act.triggered.connect(self._open_second_file)
+        self._clear_act = file_menu.addAction("&Clear All")
+        self._clear_act.triggered.connect(self._clear_all)
+
+        file_menu.addSeparator()
 
         self._save_act = file_menu.addAction("&Save As…")
         self._save_act.setShortcut("Ctrl+S")
@@ -101,19 +107,6 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self._status_label)
 
     # ------------------------------------------------------------------
-    # Public helpers
-    # ------------------------------------------------------------------
-
-    def set_route(self, route: RouteData, dirty: bool = True) -> None:
-        """Replace the active route and refresh all widgets."""
-        self._route = route
-        self.map_widget.load_route(route)
-        self.elevation_widget.load_route(route)
-        self.right_panel.load_route(route)
-        self._set_dirty(dirty)
-        self._update_status()
-
-    # ------------------------------------------------------------------
     # File slots
     # ------------------------------------------------------------------
 
@@ -121,24 +114,6 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open GPX / TCX file",
-            "",
-            "Route files (*.gpx *.tcx);;GPX files (*.gpx);;TCX files (*.tcx)",
-        )
-        if not path:
-            return
-        route = self._read_file(Path(path))
-        if route is None:
-            return
-        self._open_path = Path(path)
-        self._second_route = None
-        self._open_second_act.setEnabled(True)
-        self._merge_act.setEnabled(False)
-        self.set_route(route, dirty=False)
-
-    def _open_second_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open second GPX / TCX file",
             str(self._open_path.parent) if self._open_path else "",
             "Route files (*.gpx *.tcx);;GPX files (*.gpx);;TCX files (*.tcx)",
         )
@@ -147,13 +122,34 @@ class MainWindow(QMainWindow):
         route = self._read_file(Path(path))
         if route is None:
             return
-        self._second_route = route
-        self._merge_act.setEnabled(True)
-        self.statusBar().showMessage(
-            f"Second file loaded: {Path(path).name}  —  ready to merge", 5000
-        )
+        used_colors = [e.color for e in self._routes]
+        color = next_color(used_colors)
+        label = Path(path).stem
+        entry = RouteEntry(route=route, color=color, label=label)
+        self._routes.append(entry)
+        self._active_index = len(self._routes) - 1
+        self._open_path = Path(path)
+        self._merge_act.setEnabled(len(self._routes) >= 2)
+        self._refresh_view()
+        self._set_dirty(False)
 
-    def _read_file(self, path: Path) -> RouteData | None:
+    def _clear_all(self) -> None:
+        self._routes = []
+        self._active_index = -1
+        self._open_path = None
+        # Reset all widgets to empty/placeholder state
+        self.map_widget.load_routes([], -1)
+        self.elevation_widget.load_routes([], -1)
+        self.right_panel.set_routes([], -1)
+        self.right_panel.setTabText(1, "Track Points")
+        self.right_panel.setTabText(2, "Cues")
+        self.right_panel.setTabText(3, "POIs")
+        self._merge_act.setEnabled(False)
+        self._set_dirty(False)
+        self._update_title()
+        self._status_label.setText("No file loaded")
+
+    def _read_file(self, path: Path):
         try:
             if path.suffix.lower() == ".gpx":
                 return read_gpx(path)
@@ -165,8 +161,9 @@ class MainWindow(QMainWindow):
         return None
 
     def _save_as(self) -> None:
-        if self._route is None:
+        if not self._routes or self._active_index < 0:
             return
+        active_entry = self._routes[self._active_index]
         start_dir = str(self._open_path.parent) if self._open_path else ""
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -181,9 +178,9 @@ class MainWindow(QMainWindow):
             out = out.with_suffix(".gpx")
         try:
             if out.suffix.lower() == ".gpx":
-                write_gpx(self._route, out)
+                write_gpx(active_entry.route, out)
             else:
-                write_tcx(self._route, out)
+                write_tcx(active_entry.route, out)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Error saving file", str(exc))
             return
@@ -195,29 +192,67 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _open_merge_dialog(self) -> None:
-        if self._route is None or self._second_route is None:
+        if len(self._routes) < 2:
             return
 
-        # Import here to avoid circular import at module level
         from gpx_editor.ui.merge_dialog import MergeDialog
 
-        self._pre_merge_route = self._route
-
-        dlg = MergeDialog(
-            source=self._route,           # copy cues/POIs FROM the primary file
-            target=self._second_route,    # INTO the second file's track
-            parent=self,
-        )
-        dlg.preview_requested.connect(lambda r: self.set_route(r, dirty=True))
-
+        dlg = MergeDialog(self._routes, self)
         if dlg.exec() == MergeDialog.DialogCode.Accepted:
-            # Route already updated via preview_requested; just ensure dirty flag
-            self._set_dirty(True)
-        else:
-            # Cancelled — restore the route that was active before the dialog opened
-            self.set_route(self._pre_merge_route, dirty=False)
+            result = dlg.get_result()
+            if result is not None:
+                merged_route, label = result
+                used_colors = [e.color for e in self._routes]
+                color = next_color(used_colors)
+                new_entry = RouteEntry(route=merged_route, color=color, label=label)
+                self._routes.append(new_entry)
+                self._active_index = len(self._routes) - 1
+                self._merge_act.setEnabled(len(self._routes) >= 2)
+                self._refresh_view()
+                self._set_dirty(True)
 
-        self._pre_merge_route = None
+    # ------------------------------------------------------------------
+    # Route list slots
+    # ------------------------------------------------------------------
+
+    def _on_route_active_changed(self, index: int) -> None:
+        if self._active_index == index:
+            return
+        self._active_index = index
+        self._refresh_view()
+
+    def _on_route_color_changed(self, index: int, hex_color: str) -> None:
+        if 0 <= index < len(self._routes):
+            entry = self._routes[index]
+            self._routes[index] = RouteEntry(
+                route=entry.route,
+                color=hex_color,
+                label=entry.label,
+                visible=entry.visible,
+            )
+            self._refresh_view()
+
+    def _on_route_visibility_changed(self, index: int, visible: bool) -> None:
+        if 0 <= index < len(self._routes):
+            entry = self._routes[index]
+            self._routes[index] = RouteEntry(
+                route=entry.route,
+                color=entry.color,
+                label=entry.label,
+                visible=visible,
+            )
+            self._refresh_view()
+
+    def _on_route_removed(self, index: int) -> None:
+        if 0 <= index < len(self._routes):
+            self._routes.pop(index)
+            # Clamp active_index to valid range
+            if not self._routes:
+                self._active_index = -1
+            elif self._active_index >= len(self._routes):
+                self._active_index = len(self._routes) - 1
+            self._merge_act.setEnabled(len(self._routes) >= 2)
+            self._refresh_view()
 
     # ------------------------------------------------------------------
     # Row-selection slots
@@ -225,14 +260,19 @@ class MainWindow(QMainWindow):
 
     def _on_track_row_selected(self, row: int, lat: float, lon: float) -> None:
         self.map_widget.zoom_to(lat, lon)
-        if self._route is not None and row < len(self._route.track_points):
-            dist = float(self._route.track_points["distance"][row])
-            self.elevation_widget.move_cursor(dist)
+        if self._active_index >= 0 and self._routes:
+            route = self._routes[self._active_index].route
+            if row < len(route.track_points):
+                dist = float(route.track_points["distance"][row])
+                self.elevation_widget.move_cursor(dist)
 
     def _on_elevation_clicked(self, distance_m: float) -> None:
-        if self._route is None or len(self._route.track_points) == 0:
+        if self._active_index < 0 or not self._routes:
             return
-        tp = self._route.track_points
+        route = self._routes[self._active_index].route
+        if len(route.track_points) == 0:
+            return
+        tp = route.track_points
         dists = tp["distance"].to_numpy()
         idx = int(np.argmin(np.abs(dists - distance_m)))
         self.map_widget.zoom_to(float(tp["lat"][idx]), float(tp["lon"][idx]))
@@ -241,10 +281,28 @@ class MainWindow(QMainWindow):
 
     def _on_waypoint_row_selected(self, _row: int, lat: float, lon: float) -> None:
         self.map_widget.zoom_to(lat, lon)
-        if self._route is not None and len(self._route.track_points) > 0:
-            tp = self._route.track_points
-            idx, _ = nearest_index(lat, lon, tp["lat"].to_numpy(), tp["lon"].to_numpy())
-            self.elevation_widget.move_cursor(float(tp["distance"][idx]))
+        if self._active_index >= 0 and self._routes:
+            route = self._routes[self._active_index].route
+            if len(route.track_points) > 0:
+                tp = route.track_points
+                idx, _ = nearest_index(lat, lon, tp["lat"].to_numpy(), tp["lon"].to_numpy())
+                self.elevation_widget.move_cursor(float(tp["distance"][idx]))
+
+    # ------------------------------------------------------------------
+    # View refresh
+    # ------------------------------------------------------------------
+
+    def _refresh_view(self) -> None:
+        """Reload all widgets from the current routes list."""
+        self.map_widget.load_routes(self._routes, self._active_index)
+        self.elevation_widget.load_routes(self._routes, self._active_index)
+        self.right_panel.set_routes(self._routes, self._active_index)
+
+        if 0 <= self._active_index < len(self._routes):
+            self.right_panel.load_route(self._routes[self._active_index].route)
+
+        self._update_status()
+        self._update_title()
 
     # ------------------------------------------------------------------
     # Internal state helpers
@@ -252,7 +310,7 @@ class MainWindow(QMainWindow):
 
     def _set_dirty(self, dirty: bool) -> None:
         self._dirty = dirty
-        self._save_act.setEnabled(self._route is not None)
+        self._save_act.setEnabled(bool(self._routes) and self._active_index >= 0)
         self._update_title()
 
     def _update_title(self) -> None:
@@ -263,14 +321,18 @@ class MainWindow(QMainWindow):
             self.setWindowTitle("GPX Editor")
 
     def _update_status(self) -> None:
-        if self._route is None:
+        if not self._routes or self._active_index < 0:
             self._status_label.setText("No file loaded")
             return
-        tp = self._route.track_points
+        route = self._routes[self._active_index].route
+        tp = route.track_points
         total_km = float(tp["distance"][-1]) / 1000.0 if len(tp) > 0 else 0.0
+        n_routes = len(self._routes)
+        routes_info = f"  •  ({n_routes} routes)" if n_routes > 1 else ""
         self._status_label.setText(
             f"{len(tp)} track points  •  "
-            f"{len(self._route.cues)} cues  •  "
-            f"{len(self._route.pois)} POIs  •  "
+            f"{len(route.cues)} cues  •  "
+            f"{len(route.pois)} POIs  •  "
             f"{total_km:.1f} km"
+            f"{routes_info}"
         )
