@@ -5,6 +5,7 @@ description = "GPX editor focused on cues and POIs, mainly to copy them from one
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "folium>=0.19.0",
     "matplotlib>=3.10.9",
     "numpy>=2.4.6",
     "polars>=1.41.2",
@@ -14,4 +15,20 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-qt>=4.4.0",
 ]
+
+[project.gui-scripts]
+gpx-editor = "gpx_editor.app:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gpx_editor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
