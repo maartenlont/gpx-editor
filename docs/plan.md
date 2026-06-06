@@ -47,6 +47,95 @@
 - [x] `main_window.py` — File → Open adds to route list instead of replacing; switching active route refreshes tables and elevation cursor
 - [x] Save As and Merge operate on the active route
 
+### Phase 8 — OSM POI Import
+
+**Goal:** query OpenStreetMap for nearby POIs (water taps, fuel stations, hotels, convenience stores, etc.), display them as an overlay on the map, and allow the user to right-click any OSM marker to add it to the active track's POI list.
+
+#### Package choice: `overpy`
+
+Use **overpy** (PyPI) — lightweight Overpass API wrapper, no heavy geo dependency chain (no geopandas/shapely). Results are converted to a Polars DataFrame via a list-of-dicts.
+
+Add to `pyproject.toml`:
+```toml
+"overpy>=0.7",
+```
+
+#### New files
+
+**`src/gpx_editor/io/osm_reader.py`**
+
+```python
+OSM_CATEGORIES = {
+    "Drinking Water":    [("amenity", "drinking_water")],
+    "Fuel Station":      [("amenity", "fuel")],
+    "Hotel":             [("tourism", "hotel")],
+    "Motel":             [("tourism", "motel")],
+    "Convenience Store": [("shop", "convenience")],
+    "Supermarket":       [("shop", "supermarket")],
+    "Restaurant":        [("amenity", "restaurant")],
+    "Cafe":              [("amenity", "cafe")],
+    "Parking":           [("amenity", "parking")],
+    "Campsite":          [("tourism", "camp_site")],
+    "Pharmacy":          [("amenity", "pharmacy")],
+}
+```
+
+Public functions:
+- `query_osm_pois(south, west, north, east, tags, timeout=25) -> pl.DataFrame` — builds Overpass QL union query for given (key, value) tag pairs inside bbox; uses `out center` so way centroids are returned; returns DataFrame with columns `lat, lon, name, description, symbol`.
+- `track_bbox(track_points: pl.DataFrame, buffer_m: float) -> tuple[float,float,float,float]` — returns `(south, west, north, east)` of the track's bounding box expanded by `buffer_m` metres (uses ~111 000 m/deg latitude, cos(lat) correction for longitude).
+
+**`src/gpx_editor/ui/osm_query_dialog.py`**
+
+`OsmQueryDialog(QDialog)` — modal dialog:
+```
+┌── Query OSM POIs ───────────────────────────────────────┐
+│  POI Type:   [Dropdown: Drinking Water ▾]               │
+│  Buffer (m): [SpinBox: 100  (range 50–5000)]            │
+│                        [Cancel]  [Query]                 │
+└─────────────────────────────────────────────────────────┘
+```
+Returns `(category_label, buffer_m)` via standard `QDialog` accept/reject.
+
+#### Modified files
+
+**`src/gpx_editor/ui/map_widget.py`**
+
+- Add `osm_poi_add: Signal(float, float, str, str, str)` to `_MapBackend` and expose it on `MapWidget`.
+- Add `@Slot` `onOsmPoiAdd(lat, lon, name, description, symbol)` on `_MapBackend`.
+- Inject `window._osmLayer = L.layerGroup().addTo(window._gpxMap);` after map load (alongside existing `_ADD_POI_JS`).
+- New `load_osm_pois(df: pl.DataFrame)` — iterate rows and inject Leaflet markers via `runJavaScript`; each marker has a `contextmenu` handler that calls `backend.onOsmPoiAdd(...)`. Markers are styled distinctly (e.g. blue circle) to differ from track POIs.
+- New `clear_osm_pois()` — calls `runJavaScript("window._osmLayer.clearLayers();")`.
+
+**`src/gpx_editor/main_window.py`**
+
+- Add **Edit → Import OSM POIs…** menu action (disabled until a route with track points is loaded).
+- Enable alongside Save As in `_refresh_view()`.
+- New `_open_osm_dialog()` slot:
+  1. Open `OsmQueryDialog`.
+  2. Compute bbox from active route `track_points` + buffer via `track_bbox()`.
+  3. Call `query_osm_pois(bbox, tags)` — show status bar message while querying.
+  4. Call `self._map.load_osm_pois(df)`.
+  5. Update status bar: "Found N OSM POIs — right-click a marker to add to track".
+- New `_on_osm_poi_add(lat, lon, name, description, symbol)` slot — same snap-to-track + append pattern as existing `_on_poi_requested()`, then calls `_update_active_route(pois=new_df)` and `_refresh_view()`.
+- Connect `self._map.osm_poi_add → self._on_osm_poi_add` in `__init__`.
+
+#### Key invariants
+
+- OSM POIs are **overlay only** — never stored in `RouteData` until the user right-clicks to add one.
+- Adding an OSM POI reuses the existing snap-to-nearest-track-point logic from `io/_distance.py` and the `_update_active_route()` pattern.
+- The Overpass query uses the **track's bounding box**, not the map viewport, expanded by the user-chosen buffer.
+- GUI widgets remain dumb: all business logic lives in `io/osm_reader.py`.
+
+#### Verification
+
+1. Load a GPX file → Edit → Import OSM POIs… is enabled.
+2. Select "Drinking Water", buffer 500 m → Query.
+3. Status bar shows "Found N OSM POIs"; markers appear on map in distinct style.
+4. Right-click a marker → POI added to POIs tab with correct name/symbol.
+5. Save As GPX → new POI present in output file.
+6. No active route → Import OSM POIs… is greyed out.
+7. Overpass timeout / network error → error dialog shown, no crash.
+
 ---
 
 ## Goal
