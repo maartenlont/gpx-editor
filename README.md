@@ -1,5 +1,5 @@
 # GPX Editor
-
+**Note** This is a very quick app build for personal use to add POI to a multi-day bike packing race RACA. Feel free to use it, but be aware I didnt fully test the code and all test cases. It is probably best to keep a backup of your GPX/TCX files.
 A desktop application for viewing and editing GPX/TCX route files, with a focus on managing cues and POIs — in particular copying them from one route onto a different track.
 
 ## Features
