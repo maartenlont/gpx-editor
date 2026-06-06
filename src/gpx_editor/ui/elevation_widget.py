@@ -12,6 +12,14 @@ from PySide6.QtCore import Signal
 
 from gpx_editor.models.route import RouteData
 from gpx_editor.models.route_entry import RouteEntry
+from gpx_editor.ui.poi_icons import (
+    CUE_ICON,
+    DEFAULT_CUE_ICON,
+    POI_NAME_ICON,
+    DEFAULT_POI_ICON,
+    _FOLIUM_HEX,
+    _GLYPH_CHAR,
+)
 
 
 class ElevationWidget(FigureCanvasQTAgg):
@@ -76,6 +84,10 @@ class ElevationWidget(FigureCanvasQTAgg):
                 x=0, color="#E53935", linewidth=1.2, linestyle="--", visible=False, zorder=3
             )
 
+        # Plot icons for cues and POIs on the active route
+        if active_entry is not None and active_entry.visible:
+            self._plot_waypoint_icons(active_entry.route)
+
         if max_dist_km > 0:
             self._ax.set_xlim(0, max_dist_km)
         self.draw()
@@ -90,6 +102,72 @@ class ElevationWidget(FigureCanvasQTAgg):
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _plot_waypoint_icons(self, route: RouteData) -> None:
+        """Plot small icons for cues and POIs at their positions on the elevation profile."""
+        tp = route.track_points
+        if len(tp) == 0:
+            return
+
+        # Build quick lookup: distance → elevation
+        dist_list = tp["distance"].to_list()
+        elev_list = tp["elevation"].to_list()
+
+        def get_elev_at_dist(target_dist: float) -> float | None:
+            """Find elevation at the closest track point to target_dist."""
+            if not dist_list:
+                return None
+            # Binary-ish search: find closest
+            best_idx = 0
+            best_diff = abs(dist_list[0] - target_dist)
+            for i, d in enumerate(dist_list):
+                diff = abs(d - target_dist)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_idx = i
+            return elev_list[best_idx]
+
+        # Plot cues
+        for row in route.cues.iter_rows(named=True):
+            dist_m = row.get("distance")
+            if dist_m is None:
+                continue
+            elev = get_elev_at_dist(dist_m)
+            if elev is None:
+                continue
+
+            cue_type = (row.get("cue_type") or "").lower()
+            glyph_name, color_name = CUE_ICON.get(cue_type, DEFAULT_CUE_ICON)
+            char = _GLYPH_CHAR.get(glyph_name, "●")
+            hex_color = _FOLIUM_HEX.get(color_name, "#D63E2A")
+
+            dist_km = dist_m / 1000.0
+            self._ax.plot(dist_km, elev, marker="o", markersize=10,
+                          color=hex_color, markeredgecolor="white",
+                          markeredgewidth=1.0, zorder=5)
+            self._ax.annotate(char, (dist_km, elev), fontsize=7, fontweight="bold",
+                              color="white", ha="center", va="center", zorder=6)
+
+        # Plot POIs
+        for row in route.pois.iter_rows(named=True):
+            dist_m = row.get("distance")
+            if dist_m is None:
+                continue
+            elev = get_elev_at_dist(dist_m)
+            if elev is None:
+                continue
+
+            name = (row.get("name") or "").lower()
+            glyph_name, color_name = POI_NAME_ICON.get(name, DEFAULT_POI_ICON)
+            char = _GLYPH_CHAR.get(glyph_name, "●")
+            hex_color = _FOLIUM_HEX.get(color_name, "#72AF26")
+
+            dist_km = dist_m / 1000.0
+            self._ax.plot(dist_km, elev, marker="o", markersize=10,
+                          color=hex_color, markeredgecolor="white",
+                          markeredgewidth=1.0, zorder=5)
+            self._ax.annotate(char, (dist_km, elev), fontsize=7, fontweight="bold",
+                              color="white", ha="center", va="center", zorder=6)
 
     def _on_click(self, event) -> None:
         if event.inaxes != self._ax or event.xdata is None:

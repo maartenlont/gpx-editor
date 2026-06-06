@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import urllib.parse
 import urllib.request
 
@@ -11,6 +10,11 @@ import polars as pl
 
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 _USER_AGENT = "gpx-editor/1.0 (https://github.com/local/gpx_editor)"
+
+# Maximum number of coordinate pairs sent in the around: filter.
+# Overpass handles long polylines well via POST, but beyond ~400 pairs
+# the query string adds little precision while growing the request.
+_MAX_AROUND_PTS = 400
 
 OSM_CATEGORIES: dict[str, list[tuple[str, str]]] = {
     "Drinking Water":    [("amenity", "drinking_water")],
@@ -49,43 +53,27 @@ _OSM_RESULT_SCHEMA = {
 }
 
 
-def track_bbox(
-    track_points: pl.DataFrame,
-    buffer_m: float,
-) -> tuple[float, float, float, float]:
-    """Return (south, west, north, east) of the track expanded by buffer_m metres."""
-    lats = track_points["lat"]
-    lons = track_points["lon"]
-    min_lat, max_lat = float(lats.min()), float(lats.max())  # type: ignore[arg-type]
-    min_lon, max_lon = float(lons.min()), float(lons.max())  # type: ignore[arg-type]
-
-    lat_deg = buffer_m / 111_000.0
-    mid_lat = (min_lat + max_lat) / 2.0
-    lon_deg = buffer_m / (111_000.0 * math.cos(math.radians(mid_lat)))
-
-    return (
-        min_lat - lat_deg,
-        min_lon - lon_deg,
-        max_lat + lat_deg,
-        max_lon + lon_deg,
-    )
-
-
 def query_osm_pois(
-    south: float,
-    west: float,
-    north: float,
-    east: float,
+    track_lats: list[float],
+    track_lons: list[float],
     tags: list[tuple[str, str]],
+    buffer_m: float,
     timeout: int = 60,
 ) -> pl.DataFrame:
-    """Query Overpass API for nodes/ways matching the given (key, value) tags.
+    """Query Overpass for nodes/ways within *buffer_m* metres of the track polyline.
+
+    Uses the Overpass ``around:RADIUS,lat,lon,...`` filter, which queries a true
+    corridor around the track rather than a bounding box, so dense urban areas
+    outside the route corridor are not included.
 
     Returns a DataFrame with columns: lat, lon, name, description, symbol.
     """
-    bbox = f"{south},{west},{north},{east}"
+    coords = _downsample_track(track_lats, track_lons)
+    coord_str = ",".join(f"{lat},{lon}" for lat, lon in coords)
+    around = f"around:{int(buffer_m)},{coord_str}"
+
     tag_clauses = "".join(
-        f'  node["{k}"="{v}"]({bbox});\n  way["{k}"="{v}"]({bbox});\n'
+        f'  node["{k}"="{v}"]({around});\n  way["{k}"="{v}"]({around});\n'
         for k, v in tags
     )
     query = f"[out:json][timeout:{timeout}];\n(\n{tag_clauses});\nout center;"
@@ -111,6 +99,22 @@ def query_osm_pois(
     return pl.DataFrame(rows, schema=_OSM_RESULT_SCHEMA)
 
 
+def _downsample_track(
+    lats: list[float],
+    lons: list[float],
+    max_pts: int = _MAX_AROUND_PTS,
+) -> list[tuple[float, float]]:
+    """Stride-downsample track coordinates to at most *max_pts* pairs."""
+    n = len(lats)
+    if n <= max_pts:
+        return list(zip(lats, lons))
+    step = max(1, n // max_pts)
+    indices = list(range(0, n, step))
+    if indices[-1] != n - 1:
+        indices.append(n - 1)
+    return [(lats[i], lons[i]) for i in indices]
+
+
 def _element_to_row(element: dict, query_tags: list[tuple[str, str]]) -> dict | None:
     t = element.get("tags", {})
     etype = element.get("type", "")
@@ -119,7 +123,6 @@ def _element_to_row(element: dict, query_tags: list[tuple[str, str]]) -> dict | 
         lat = element.get("lat")
         lon = element.get("lon")
     elif etype == "way":
-        # "out center" puts centroid in element["center"]
         center = element.get("center", {})
         lat = center.get("lat")
         lon = center.get("lon")

@@ -23,7 +23,7 @@ _QSETTINGS_ARGS = ("gpx-editor", "gpx-editor")
 from gpx_editor.io._distance import nearest_index
 from gpx_editor.io.gpx_reader import read_gpx
 from gpx_editor.io.gpx_writer import write_gpx
-from gpx_editor.io.osm_reader import OSM_CATEGORIES, query_osm_pois, track_bbox
+from gpx_editor.io.osm_reader import OSM_CATEGORIES, query_osm_pois
 from gpx_editor.io.tcx_reader import read_tcx
 from gpx_editor.io.tcx_writer import write_tcx
 from gpx_editor.models.route import POIS_SCHEMA, RouteData
@@ -315,7 +315,7 @@ class MainWindow(QMainWindow):
                 label=entry.label,
                 visible=entry.visible,
             )
-            self._refresh_view()
+            self._refresh_view_preserve_map()
 
     def _on_route_visibility_changed(self, index: int, visible: bool) -> None:
         if 0 <= index < len(self._routes):
@@ -326,7 +326,15 @@ class MainWindow(QMainWindow):
                 label=entry.label,
                 visible=visible,
             )
+            self._refresh_view_preserve_map()
+
+    def _refresh_view_preserve_map(self) -> None:
+        """Reload all widgets while keeping the current map zoom and position."""
+        def _do_refresh(view):
+            if view:
+                self.map_widget.schedule_view_restore(view)
             self._refresh_view()
+        self.map_widget.get_current_view(_do_refresh)
 
     def _on_route_removed(self, index: int) -> None:
         if 0 <= index < len(self._routes):
@@ -463,9 +471,8 @@ class MainWindow(QMainWindow):
         def _run_query(viewport):
             if viewport:
                 vs, vw, vn, ve = viewport
-                # Use only track points that fall inside the current viewport, then
-                # expand by the buffer.  This keeps the Overpass bbox tight even for
-                # very long routes where the user is zoomed into a small section.
+                # Restrict to track points inside the current viewport so that a
+                # long route only queries the visible section.
                 visible_tp = tp.filter(
                     (pl.col("lat") >= vs) & (pl.col("lat") <= vn) &
                     (pl.col("lon") >= vw) & (pl.col("lon") <= ve)
@@ -475,16 +482,18 @@ class MainWindow(QMainWindow):
                         "No track visible in current map view — pan to the route first."
                     )
                     return
-                qs, qw, qn, qe = track_bbox(visible_tp, buffer_m)
-                # Clip to the viewport so we never query beyond what is visible.
-                qs, qw = max(qs, vs), max(qw, vw)
-                qn, qe = min(qn, vn), min(qe, ve)
             else:
-                qs, qw, qn, qe = track_bbox(tp, buffer_m)
+                visible_tp = tp
 
+            lats = visible_tp["lat"].to_list()
+            lons = visible_tp["lon"].to_list()
+
+            # Cache key: category + buffer + extent of the visible section (rounded
+            # to ~110 m so minor panning doesn't bust the cache unnecessarily).
             cache_key = (
-                category,
-                round(qs, 3), round(qw, 3), round(qn, 3), round(qe, 3),
+                category, buffer_m,
+                round(min(lats), 3), round(min(lons), 3),
+                round(max(lats), 3), round(max(lons), 3),
             )
             if cache_key in self._osm_cache:
                 df = self._osm_cache[cache_key]
@@ -493,7 +502,7 @@ class MainWindow(QMainWindow):
                 self._status_label.setText(f"Querying OSM for '{category}'…")
                 self.statusBar().repaint()
                 try:
-                    df = query_osm_pois(qs, qw, qn, qe, tags)
+                    df = query_osm_pois(lats, lons, tags, buffer_m)
                 except Exception as exc:  # noqa: BLE001
                     QMessageBox.critical(self, "OSM query failed", str(exc))
                     self._update_status()

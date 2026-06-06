@@ -153,7 +153,8 @@ class MapWidget(QWebEngineView):
         self._map_js_name: str | None = None
         self._map_ready = False
         self._map_loaded_connected = False
-        self._osm_df = None  # persisted across map reloads
+        self._osm_df = None           # persisted across map reloads
+        self._restore_view: list | None = None  # [lat, lng, zoom] to restore after reload
 
         # Wire JS↔Python bridge via QWebChannel
         self._backend = _MapBackend()
@@ -208,10 +209,30 @@ class MapWidget(QWebEngineView):
             if active_entry.visible:
                 self._add_markers(m, active_entry.route)
 
-        m.fit_bounds([[min(all_lats), min(all_lons)], [max(all_lats), max(all_lons)]])
+        if self._restore_view is None:
+            m.fit_bounds([[min(all_lats), min(all_lons)], [max(all_lats), max(all_lons)]])
+        # else: _on_map_loaded will restore the captured view instead
 
         self._map_js_name = m.get_name()
         self._save_and_load(m)
+
+    def get_current_view(self, callback) -> None:
+        """Call callback([lat, lng, zoom]) with the live map state, or None if not ready."""
+        if not self._map_ready:
+            callback(None)
+            return
+        self.page().runJavaScript(
+            "(function() {"
+            "  if (!window._gpxMap) return null;"
+            "  var c = window._gpxMap.getCenter();"
+            "  return [c.lat, c.lng, window._gpxMap.getZoom()];"
+            "})()",
+            callback,
+        )
+
+    def schedule_view_restore(self, view: list) -> None:
+        """Ask the next map reload to restore *view* instead of fitting bounds."""
+        self._restore_view = view
 
     def zoom_to(self, lat: float, lon: float, zoom: int = 16) -> None:
         if self._map_ready:
@@ -408,6 +429,12 @@ class MapWidget(QWebEngineView):
 
             def _on_ready(_):
                 self._map_ready = True
+                if self._restore_view is not None:
+                    lat, lng, zoom = self._restore_view
+                    self.page().runJavaScript(
+                        f"window._gpxMap.setView([{lat},{lng}],{zoom},{{animate:false}});"
+                    )
+                    self._restore_view = None
                 self._inject_osm_pois()
 
             self.page().runJavaScript(js, _on_ready)
