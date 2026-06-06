@@ -1,5 +1,45 @@
 # GPX Editor — Implementation Plan
 
+## Progress
+
+### Phase 1 — Data layer
+- [x] `models/route.py` — RouteData dataclass + column schemas
+- [x] `io/_distance.py` — Haversine, cumulative distance, nearest-index
+- [x] `io/gpx_reader.py` — parse GPX → 3 DataFrames (incl. Garmin extensions)
+- [x] `io/tcx_reader.py` — parse TCX Course/Activity → 3 DataFrames
+- [x] `io/gpx_writer.py` — serialise RouteData → GPX 1.1
+- [x] `io/tcx_writer.py` — serialise RouteData → TCX Course
+- [x] Tests: 71 passing (models, io readers, io round-trips)
+
+### Phase 2 — Merge logic
+- [x] `logic/merge.py` — copy cues/POIs by proximity
+- [x] Tests: `tests/logic/test_merge.py` (27 passing)
+
+### Phase 3 — GUI skeleton
+- [x] `ui/dataframe_table.py` — generic Polars DataFrame model + table widget
+- [x] `ui/map_widget.py` — Folium/Leaflet map in QWebEngineView
+- [x] `ui/elevation_widget.py` — matplotlib elevation profile
+- [x] `ui/right_panel.py` — QTabWidget with counts in tab labels
+- [x] `main_window.py` — splitter layout, File → Open, status bar
+- [x] `app.py` — QApplication entry point
+- [x] `main.py` — thin launcher
+
+### Phase 4 — File I/O integration
+- [ ] File → Save As (GPX / TCX)
+- [ ] Dirty indicator (`*`) in window title
+
+### Phase 5 — Merge workflow
+- [ ] File → Open Second File
+- [ ] Edit → Merge Cues & POIs… dialog with threshold spinbox + preview/apply
+
+### Phase 6 — Polish
+- [ ] Keyboard shortcuts (Ctrl+O, Ctrl+S)
+- [ ] Error dialogs for malformed files
+- [ ] RDP polyline simplification for large files
+- [ ] README with install + run instructions
+
+---
+
 ## Goal
 
 A desktop GUI application (PySide6) that:
@@ -20,6 +60,8 @@ A desktop GUI application (PySide6) that:
 gpx_editor/
 ├── docs/
 │   └── plan.md                  # this file
+├── resources/
+│   └── icons/                   # cue icons (turn_left.png, turn_right.png, etc.)
 ├── src/
 │   └── gpx_editor/
 │       ├── __init__.py
@@ -201,15 +243,21 @@ Layout:
 └──────────────────────────┴───────────────────────────────────┘
 ```
 
-Splitter ratios: map + elevation on the left (~60 % width), tabs on the right (~40 %).
+Splitter ratios: map + elevation on the left (50 % width), tabs on the right (50 %).
 The left side is itself a vertical QSplitter: map (~75 %) / elevation (~25 %).
 
 Tasks:
-1. `map_widget.py` — embed a local Leaflet map in `QWebEngineView`.
-   - On `load_route(route: RouteData)`: render polyline + cue/POI markers via
-     `page().runJavaScript(...)`.
-   - `zoom_to(lat, lon, zoom=16)` — callable from table row clicks.
-   - Cue markers use a directional icon; POI markers use a pin icon.
+1. `map_widget.py` — embed a Leaflet map via **Folium** in `QWebEngineView`.
+   - On `load_route(route: RouteData)`: generate map HTML with Folium and load via
+     `setHtml(map._repr_html_())`.
+   - `zoom_to(lat, lon, zoom=16)` — callable from table row clicks via
+     `page().runJavaScript("map.setView([lat, lon], zoom)")`.
+   - **Cue markers**: use `folium.CustomIcon` with bundled PNG/SVG icons per `cue_type`
+     (e.g. `turn_left.png`, `turn_right.png`). Store icons in `resources/icons/`.
+   - **POI markers**: use `folium.Icon(prefix="fa")` mapped from the `symbol` column
+     (e.g. `food` → `cutlery`, `water` → `tint`). Fallback to a generic pin icon.
+   - **Polyline**: render track points with `folium.PolyLine`. For large files (100k+
+     points), simplify with Ramer-Douglas-Peucker before rendering.
 2. `elevation_widget.py` — matplotlib `FigureCanvas`.
    - Plots distance (x) vs elevation (y).
    - A vertical cursor line updates when a track-point row is selected.
@@ -257,7 +305,13 @@ Tasks:
 - Status bar showing number of track points / cues / POIs, and total distance.
 - Keyboard shortcut `Ctrl+O` to open, `Ctrl+S` to save.
 - Error dialogs for malformed files.
-- `pyproject.toml`: add `pyside6-webengine` if needed, add `pytest-qt` to dev deps.
+- `pyproject.toml`:
+  - Add `pyside6-webengine` if needed, add `pytest-qt` to dev deps.
+  - Add GUI script entry point:
+    ```toml
+    [project.gui-scripts]
+    gpx-editor = "gpx_editor.app:run"
+    ```
 - `README.md` with install and run instructions.
 
 ---
@@ -267,7 +321,7 @@ Tasks:
 | Concern           | Choice                                   | Reason                                      |
 |-------------------|------------------------------------------|---------------------------------------------|
 | GUI framework     | PySide6                                  | specified; LGPL; best Python Qt binding     |
-| Map rendering     | Leaflet.js via QWebEngineView            | tile-based, offline-capable, easy JS bridge |
+| Map rendering     | Folium (Leaflet.js) via QWebEngineView   | OSM tiles, custom icons, easy Python API    |
 | Elevation chart   | matplotlib FigureCanvas (in PySide6)     | already in dependencies                     |
 | Data storage      | Polars DataFrames                        | specified; fast; expressive                 |
 | File parsing      | `xml.etree.ElementTree` (stdlib)         | no extra dep; sufficient for GPX/TCX        |
@@ -282,6 +336,7 @@ Add to `pyproject.toml`:
 
 ```toml
 dependencies = [
+    "folium>=0.19.0",
     "matplotlib>=3.10.9",
     "numpy>=2.4.6",
     "polars>=1.41.2",
