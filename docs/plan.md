@@ -29,14 +29,23 @@
 - [x] Dirty indicator (`*`) in window title
 
 ### Phase 5 — Merge workflow
-- [ ] File → Open Second File
-- [ ] Edit → Merge Cues & POIs… dialog with threshold spinbox + preview/apply
+- [x] File → Open Second File (enabled after first file is loaded)
+- [x] Edit → Merge Cues & POIs… dialog with threshold spinbox, preview, apply, cancel
 
 ### Phase 6 — Polish
-- [ ] Keyboard shortcuts (Ctrl+O, Ctrl+S)
-- [ ] Error dialogs for malformed files
-- [ ] RDP polyline simplification for large files
-- [ ] README with install + run instructions
+- [x] Keyboard shortcuts (Ctrl+O, Ctrl+S, Ctrl+Q)
+- [x] Error dialogs for malformed files
+- [x] Polyline downsampling for large files (>5 000 points)
+- [x] README with install, run, workflow, and shortcut docs
+
+### Phase 7 — Multi-route support
+- [ ] `models/route_entry.py` — `RouteEntry` dataclass wrapping `RouteData` + display color
+- [ ] `ui/route_list_widget.py` — routes panel: list of loaded routes, color swatch, remove button
+- [ ] `ui/right_panel.py` — add "Routes" tab containing the route list widget
+- [ ] `ui/map_widget.py` — render all loaded routes simultaneously; each polyline in its own color; cue/POI markers only for the active route
+- [ ] `ui/elevation_widget.py` — overlay elevation profiles of all routes; active route highlighted
+- [ ] `main_window.py` — File → Open adds to route list instead of replacing; switching active route refreshes tables and elevation cursor
+- [ ] Save As and Merge operate on the active route
 
 ---
 
@@ -77,7 +86,8 @@ gpx_editor/
 │       │
 │       ├── models/
 │       │   ├── __init__.py
-│       │   └── route.py         # RouteData dataclass holding the three DataFrames
+│       │   ├── route.py         # RouteData dataclass holding the three DataFrames
+│       │   └── route_entry.py   # RouteEntry (RouteData + color + label + visible)
 │       │
 │       ├── logic/
 │       │   ├── __init__.py
@@ -85,13 +95,12 @@ gpx_editor/
 │       │
 │       └── ui/
 │           ├── __init__.py
-│           ├── map_widget.py    # interactive map (QWebEngineView + Leaflet)
+│           ├── map_widget.py        # interactive map (QWebEngineView + Leaflet)
 │           ├── elevation_widget.py  # matplotlib FigureCanvas elevation profile
-│           ├── track_table.py   # QTableView for track points DataFrame
-│           ├── cue_table.py     # QTableView for cues DataFrame
-│           ├── poi_table.py     # QTableView for POIs DataFrame
-│           ├── right_panel.py   # QTabWidget containing the three tables
-│           └── merge_dialog.py  # dialog to pick second file + distance threshold
+│           ├── dataframe_table.py   # generic Polars DataFrame model + table widget
+│           ├── right_panel.py       # QTabWidget: Routes + Track Points + Cues + POIs
+│           ├── route_list_widget.py # per-route list with colour swatches (Phase 7)
+│           └── merge_dialog.py      # dialog to pick second file + distance threshold
 ├── tests/
 │   ├── conftest.py              # shared fixtures (sample DataFrames, tmp file paths)
 │   ├── io/
@@ -305,14 +314,105 @@ Tasks:
 - Status bar showing number of track points / cues / POIs, and total distance.
 - Keyboard shortcut `Ctrl+O` to open, `Ctrl+S` to save.
 - Error dialogs for malformed files.
-- `pyproject.toml`:
-  - Add `pyside6-webengine` if needed, add `pytest-qt` to dev deps.
-  - Add GUI script entry point:
-    ```toml
-    [project.gui-scripts]
-    gpx-editor = "gpx_editor.app:run"
-    ```
-- `README.md` with install and run instructions.
+- Polyline downsampling for large files (>5 000 track points).
+- `README.md` with install, run, and merge workflow instructions.
+
+---
+
+### Phase 7 — Multi-route support
+
+**Goal:** load any number of GPX/TCX files simultaneously; view all routes on the
+map in different colours; switch the "active" route to inspect its tables and
+elevation; change per-route colours interactively.
+
+#### Data model
+
+Add `src/gpx_editor/models/route_entry.py`:
+
+```python
+@dataclass
+class RouteEntry:
+    route: RouteData
+    color: str        # CSS hex colour, e.g. "#1565C0"
+    label: str        # display name — defaults to filename stem
+    visible: bool = True
+```
+
+`MainWindow` replaces the single `_route` field with a list of `RouteEntry` objects
+and an `_active_index: int`.  The active entry drives the tables, elevation chart, and
+zoom behaviour; all visible entries are rendered on the map.
+
+#### New file
+
+**`src/gpx_editor/ui/route_list_widget.py`** — a `QWidget` that contains a
+`QListWidget` where each item shows:
+- A coloured rectangle (the route colour).
+- The route label (filename stem).
+- A remove button (×).
+
+Interactions:
+- **Single click** → set active route; tables and elevation chart update.
+- **Double-click colour swatch** → open `QColorDialog`; update the swatch and
+  re-render the map.
+- **Remove button** → remove the route from the list; if it was active, activate the
+  previous route (or clear the view if the list is empty).
+
+Signals emitted by `RouteListWidget`:
+| Signal | Payload | When |
+|---|---|---|
+| `active_changed` | `int` index | user selects a different route |
+| `color_changed` | `int` index, `str` hex | user picks a new colour |
+| `route_removed` | `int` index | user removes a route |
+
+#### Right panel changes
+
+Add a **"Routes"** tab (first tab) to `RightPanel` containing the `RouteListWidget`.
+The existing Track Points / Cues / POIs tabs continue to show data for the active
+route only.
+
+#### Map widget changes
+
+`load_routes(entries: list[RouteEntry])` replaces `load_route`:
+- Renders one `folium.PolyLine` per visible entry using each entry's colour.
+- Renders cue and POI markers **only for the active entry** (to avoid visual clutter).
+- Accepts a separate `active_index` parameter so the map knows which markers to show.
+
+`update_route_color(index: int, color: str)` — re-renders only the affected polyline
+via `runJavaScript` without reloading the full map.
+
+#### Elevation widget changes
+
+`load_routes(entries: list[RouteEntry], active_index: int)`:
+- Plots one elevation line per visible entry using each entry's colour, at reduced
+  opacity (0.4) for inactive routes.
+- The active route is drawn at full opacity with the red cursor line.
+
+#### Main window changes
+
+- **File → Open** appends a new `RouteEntry` with an auto-assigned colour (cycling
+  through a palette) instead of replacing the current route.
+- **File → Close Route** removes the active route from the list.
+- Active-route switching updates tables, elevation, and map markers.
+- **Save As**, **Merge**, and all row-selection interactions continue to operate on the
+  active route only.
+
+#### Colour palette
+
+Assign colours from a fixed palette for new routes (cycling if more than 8 are
+loaded):
+
+```python
+_PALETTE = [
+    "#1565C0",  # blue      (primary)
+    "#B71C1C",  # red
+    "#2E7D32",  # green
+    "#E65100",  # orange
+    "#6A1B9A",  # purple
+    "#00695C",  # teal
+    "#F9A825",  # amber
+    "#4E342E",  # brown
+]
+```
 
 ---
 

@@ -6,6 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import folium
 from PySide6.QtCore import QUrl
 from PySide6.QtWebEngineCore import QWebEngineSettings
@@ -80,6 +81,26 @@ _POI_NAME_ICON: dict[str, tuple[str, str]] = {
 }
 _DEFAULT_POI_ICON = ("info-sign", "green")
 
+# Maximum polyline points sent to Leaflet; larger tracks are downsampled.
+_MAX_POLYLINE_PTS = 5_000
+
+
+def _simplify(lats: list[float], lons: list[float]) -> tuple[list[float], list[float]]:
+    """Stride-downsample a track to at most _MAX_POLYLINE_PTS points.
+
+    First and last points are always preserved so the route ends correctly.
+    """
+    n = len(lats)
+    if n <= _MAX_POLYLINE_PTS:
+        return lats, lons
+    step = max(2, n // _MAX_POLYLINE_PTS)
+    arr_lat = np.array(lats)
+    arr_lon = np.array(lons)
+    idx = np.arange(0, n, step)
+    if idx[-1] != n - 1:
+        idx = np.append(idx, n - 1)
+    return arr_lat[idx].tolist(), arr_lon[idx].tolist()
+
 
 class MapWidget(QWebEngineView):
     def __init__(self, parent=None) -> None:
@@ -110,9 +131,10 @@ class MapWidget(QWebEngineView):
 
         m = folium.Map(location=center, zoom_start=13, control_scale=True)
 
-        # Track polyline
+        # Track polyline — simplified for large files
+        s_lats, s_lons = _simplify(lats, lons)
         folium.PolyLine(
-            list(zip(lats, lons)), color="#1565C0", weight=3, opacity=0.85
+            list(zip(s_lats, s_lons)), color="#1565C0", weight=3, opacity=0.85
         ).add_to(m)
 
         # Cue markers
