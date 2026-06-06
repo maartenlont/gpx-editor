@@ -477,6 +477,9 @@ class MainWindow(QMainWindow):
         self.right_panel.load_route(new_route)
         self._set_dirty(True)
         self._update_status()
+        # Inject the new marker and jump the POI table to it.
+        self.map_widget.add_poi_marker(snap_lat, snap_lon, display_name, symbol or "generic")
+        self.right_panel.focus_poi(next_idx)
 
     # ------------------------------------------------------------------
     # Row-selection slots

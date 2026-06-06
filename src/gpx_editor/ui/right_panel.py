@@ -55,6 +55,11 @@ class RightPanel(QTabWidget):
         """Delegate to the route list widget."""
         self.route_list.set_routes(entries, active_index)
 
+    def focus_poi(self, index_val: int) -> None:
+        """Switch to the POIs tab and select the row with the given stable index."""
+        self.setCurrentIndex(3)
+        self.poi_table.select_row_by_index_val(index_val)
+
     def select_nearest_distance(self, distance_m: float) -> None:
         """Select the nearest row in whichever data tab is currently visible.
 

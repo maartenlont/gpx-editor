@@ -134,6 +134,23 @@ class DataFrameTableWidget(QWidget):
         self._model.load(df)
         self._fix_icon_col_width()
 
+    def select_row_by_index_val(self, index_val: int) -> None:
+        """Select and scroll to the row whose 'index' column equals *index_val*.
+
+        Signals are blocked so the selection doesn't trigger map zoom.
+        """
+        df = self._model._df
+        if "index" not in df.columns or len(df) == 0:
+            return
+        matches = (df["index"] == index_val).to_list()
+        if True not in matches:
+            return
+        row = matches.index(True)
+        self._view.selectionModel().blockSignals(True)
+        self._view.selectRow(row)
+        self._view.selectionModel().blockSignals(False)
+        self._view.scrollTo(self._model.index(row, 0))
+
     def select_nearest_distance(self, distance_m: float) -> None:
         """Select and scroll to the row whose distance is closest to *distance_m*.
 

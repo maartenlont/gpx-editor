@@ -6,6 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import html as _html
 import json
 
 import numpy as np
@@ -76,8 +77,16 @@ _ADD_POI_JS = """
 }());
 """
 
-# Injected once after the map is ready: creates the OSM overlay layer.
-_OSM_LAYER_JS = "window._osmLayer = L.layerGroup().addTo(window._gpxMap);"
+# Injected once after the map is ready: creates the OSM overlay layer and
+# a global helper so popup buttons can reach the Python backend.
+_OSM_LAYER_JS = """
+window._osmLayer = L.layerGroup().addTo(window._gpxMap);
+window._addOsmPoi = function(lat, lon, name, desc, symbol) {
+    if (typeof backend !== 'undefined') {
+        backend.onOsmPoiAdd(lat, lon, name, desc, symbol);
+    }
+};
+"""
 
 # Maximum polyline points sent to Leaflet; larger tracks are downsampled.
 _MAX_POLYLINE_PTS = 5_000
@@ -200,6 +209,28 @@ class MapWidget(QWebEngineView):
         self._osm_df = df
         self._inject_osm_pois()
 
+    def add_poi_marker(self, lat: float, lon: float, name: str, symbol: str) -> None:
+        """Inject a single track-POI marker into the live map without reloading."""
+        if not self._map_ready:
+            return
+        name_j = json.dumps(name)
+        sym_j = json.dumps(symbol)
+        popup_j = json.dumps(f"<b>{name}</b><br><i>{symbol}</i>")
+        js = (
+            f"(function(){{"
+            f"  var icon = L.divIcon({{"
+            f"    html: '<div style=\"width:12px;height:12px;border-radius:50%;"
+            f"background:#2E7D32;border:2px solid white;"
+            f"box-shadow:0 0 4px rgba(0,0,0,0.5)\"></div>',"
+            f"    iconSize:[16,16], iconAnchor:[8,8], className:''"
+            f"  }});"
+            f"  L.marker([{lat},{lon}],{{icon:icon}})"
+            f"    .bindPopup({popup_j})"
+            f"    .addTo(window._gpxMap);"
+            f"}})();"
+        )
+        self.page().runJavaScript(js)
+
     def clear_osm_pois(self) -> None:
         """Remove all OSM overlay markers and clear the stored overlay."""
         self._osm_df = None
@@ -218,34 +249,51 @@ class MapWidget(QWebEngineView):
         rows = self._osm_df.to_dicts()
         if not rows:
             return
-        js_parts = ["(function() {"]
+        js_parts = []
         for row in rows:
             lat = row["lat"]
             lon = row["lon"]
-            name = json.dumps(row["name"] or "")
-            desc = json.dumps(row["description"] or "")
-            symbol = json.dumps(row["symbol"] or "generic")
-            popup_html = json.dumps(
-                f"<b>{row['name'] or ''}</b>"
-                + (f"<br>{row['description']}" if row["description"] else "")
-                + "<br><i>Right-click to add to track</i>"
+            name_s = row["name"] or ""
+            desc_s = row["description"] or ""
+            sym_s = row["symbol"] or "generic"
+
+            # Embed all string data in a JS object literal — no inline onclick,
+            # so HTML attribute quoting cannot break the button handler.
+            data_j = json.dumps({
+                "lat": lat, "lon": lon,
+                "name": name_s, "desc": desc_s, "symbol": sym_s,
+            })
+
+            lines = [
+                f"<b>{_html.escape(name_s)}</b>" if name_s else "<i>(unnamed)</i>",
+            ]
+            if desc_s:
+                lines.append(_html.escape(desc_s))
+            lines.append(f"<i>Type: {_html.escape(sym_s)}</i>")
+            lines.append(
+                '<button class="osm-add-btn" '
+                'style="margin-top:6px;padding:3px 8px;cursor:pointer">'
+                '+ Add to Track</button>'
             )
+            popup_html_j = json.dumps("<br>".join(lines))
+
             js_parts.append(
                 f"(function() {{"
-                f"  var m = L.circleMarker([{lat}, {lon}], "
+                f"  var d = {data_j};"
+                f"  var m = L.circleMarker([d.lat, d.lon], "
                 f"    {{radius:8, color:'#1565C0', fillColor:'#42A5F5',"
                 f"     fillOpacity:0.85, weight:2}});"
-                f"  m.bindPopup({popup_html});"
-                f"  m.on('contextmenu', function(e) {{"
-                f"    L.DomEvent.stopPropagation(e);"
-                f"    if (typeof backend !== 'undefined') {{"
-                f"      backend.onOsmPoiAdd({lat}, {lon}, {name}, {desc}, {symbol});"
-                f"    }}"
+                f"  m.bindPopup({popup_html_j}, {{maxWidth:240}});"
+                f"  m.on('popupopen', function() {{"
+                f"    var btn = m.getPopup().getElement()"
+                f"      .querySelector('.osm-add-btn');"
+                f"    if (btn) btn.addEventListener('click', function() {{"
+                f"      window._addOsmPoi(d.lat, d.lon, d.name, d.desc, d.symbol);"
+                f"    }});"
                 f"  }});"
                 f"  m.addTo(window._osmLayer);"
                 f"}})();"
             )
-        js_parts.append("})();")
         self.page().runJavaScript("\n".join(js_parts))
 
     # ------------------------------------------------------------------
@@ -256,11 +304,13 @@ class MapWidget(QWebEngineView):
         for row in route.cues.iter_rows(named=True):
             key = row["cue_type"].lower() if row["cue_type"] else ""
             icon_name, color = _CUE_ICON.get(key, _DEFAULT_CUE_ICON)
+            dist_km = row["distance"] / 1000.0 if row["distance"] is not None else None
+            popup_parts = [f"<b>{row['name']}</b>", row["cue_type"] or ""]
+            if dist_km is not None:
+                popup_parts.append(f"📍 {dist_km:.2f} km")
             folium.Marker(
                 [row["lat"], row["lon"]],
-                popup=folium.Popup(
-                    f"<b>{row['name']}</b><br>{row['cue_type']}", max_width=200
-                ),
+                popup=folium.Popup("<br>".join(p for p in popup_parts if p), max_width=200),
                 tooltip=row["name"],
                 icon=folium.Icon(color=color, icon=icon_name),
             ).add_to(m)
@@ -268,12 +318,14 @@ class MapWidget(QWebEngineView):
         for row in route.pois.iter_rows(named=True):
             name_key = (row["name"] or "").lower()
             icon_name, color = _POI_NAME_ICON.get(name_key, _DEFAULT_POI_ICON)
+            dist_km = row["distance"] / 1000.0 if row["distance"] is not None else None
+            popup_parts = [f"<b>{row['name']}</b>", row.get("description") or ""]
+            if dist_km is not None:
+                popup_parts.append(f"📍 {dist_km:.2f} km")
             folium.Marker(
                 [row["lat"], row["lon"]],
-                popup=folium.Popup(
-                    f"<b>{row['name']}</b><br>{row.get('description', '')}", max_width=200
-                ),
-                tooltip=row["name"],
+                popup=folium.Popup("<br>".join(p for p in popup_parts if p), max_width=200),
+                tooltip=f"{row['name']} ({dist_km:.2f} km)" if dist_km is not None else row["name"],
                 icon=folium.Icon(color=color, icon=icon_name),
             ).add_to(m)
 
