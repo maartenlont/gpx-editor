@@ -95,6 +95,21 @@ class DataFrameTableWidget(QWidget):
     def load(self, df: pl.DataFrame) -> None:
         self._model.load(df)
 
+    def select_nearest_distance(self, distance_m: float) -> None:
+        """Select and scroll to the row whose distance is closest to *distance_m*.
+
+        Signals are blocked during the programmatic selection to avoid a
+        feedback loop back into the elevation widget / map.
+        """
+        df = self._model._df
+        if "distance" not in df.columns or len(df) == 0:
+            return
+        idx = int((df["distance"] - distance_m).abs().arg_min())
+        self._view.selectionModel().blockSignals(True)
+        self._view.selectRow(idx)
+        self._view.selectionModel().blockSignals(False)
+        self._view.scrollTo(self._model.index(idx, 0))
+
     def _on_row_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         if not current.isValid():
             return

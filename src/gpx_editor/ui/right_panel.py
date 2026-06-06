@@ -26,10 +26,15 @@ class RightPanel(QTabWidget):
         for tbl in (self.track_table, self.cue_table, self.poi_table):
             tbl.row_selected.connect(self.row_selected)
 
+    def select_nearest_distance(self, distance_m: float) -> None:
+        """Select the nearest row in whichever tab is currently visible."""
+        tables = [self.track_table, self.cue_table, self.poi_table]
+        tables[self.currentIndex()].select_nearest_distance(distance_m)
+
     def load_route(self, route: RouteData) -> None:
-        self.track_table.load(route.track_points)
-        self.cue_table.load(route.cues)
-        self.poi_table.load(route.pois)
+        self.track_table.load(route.track_points.sort("distance"))
+        self.cue_table.load(route.cues.sort("distance"))
+        self.poi_table.load(route.pois.sort("distance"))
         # Update tab labels with counts
         self.setTabText(0, f"Track Points ({len(route.track_points)})")
         self.setTabText(1, f"Cues ({len(route.cues)})")

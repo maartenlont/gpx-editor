@@ -25,8 +25,8 @@
 - [x] `main.py` — thin launcher
 
 ### Phase 4 — File I/O integration
-- [ ] File → Save As (GPX / TCX)
-- [ ] Dirty indicator (`*`) in window title
+- [x] File → Save As (GPX / TCX) with Ctrl+S shortcut
+- [x] Dirty indicator (`*`) in window title
 
 ### Phase 5 — Merge workflow
 - [ ] File → Open Second File

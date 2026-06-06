@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -11,10 +14,12 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
 )
-from PySide6.QtCore import Qt
 
+from gpx_editor.io._distance import nearest_index
 from gpx_editor.io.gpx_reader import read_gpx
+from gpx_editor.io.gpx_writer import write_gpx
 from gpx_editor.io.tcx_reader import read_tcx
+from gpx_editor.io.tcx_writer import write_tcx
 from gpx_editor.models.route import RouteData
 from gpx_editor.ui.elevation_widget import ElevationWidget
 from gpx_editor.ui.map_widget import MapWidget
@@ -25,10 +30,12 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._route: RouteData | None = None
+        self._open_path: Path | None = None
+        self._dirty = False
         self._setup_ui()
         self._setup_menu()
         self._setup_status_bar()
-        self.setWindowTitle("GPX Editor")
+        self._update_title()
         self.resize(1400, 800)
 
     # ------------------------------------------------------------------
@@ -36,7 +43,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _setup_ui(self) -> None:
-        # Left side: vertical splitter → map (top) + elevation (bottom)
         self.map_widget = MapWidget()
         self.elevation_widget = ElevationWidget()
 
@@ -46,10 +52,8 @@ class MainWindow(QMainWindow):
         left_splitter.setStretchFactor(0, 3)
         left_splitter.setStretchFactor(1, 1)
 
-        # Right side: tab panel with the three tables
         self.right_panel = RightPanel()
 
-        # Outer horizontal splitter
         outer_splitter = QSplitter(Qt.Horizontal)
         outer_splitter.addWidget(left_splitter)
         outer_splitter.addWidget(self.right_panel)
@@ -58,10 +62,10 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(outer_splitter)
 
-        # Row selection in any table → zoom map + move elevation cursor
         self.right_panel.track_table.row_selected.connect(self._on_track_row_selected)
         self.right_panel.cue_table.row_selected.connect(self._on_waypoint_row_selected)
         self.right_panel.poi_table.row_selected.connect(self._on_waypoint_row_selected)
+        self.elevation_widget.location_clicked.connect(self._on_elevation_clicked)
 
     def _setup_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -69,6 +73,11 @@ class MainWindow(QMainWindow):
         open_act = file_menu.addAction("&Open…")
         open_act.setShortcut("Ctrl+O")
         open_act.triggered.connect(self._open_file)
+
+        self._save_act = file_menu.addAction("&Save As…")
+        self._save_act.setShortcut("Ctrl+S")
+        self._save_act.setEnabled(False)
+        self._save_act.triggered.connect(self._save_as)
 
         file_menu.addSeparator()
 
@@ -79,6 +88,19 @@ class MainWindow(QMainWindow):
     def _setup_status_bar(self) -> None:
         self._status_label = QLabel("No file loaded")
         self.statusBar().addWidget(self._status_label)
+
+    # ------------------------------------------------------------------
+    # Public helpers (used by Phase 5 merge workflow)
+    # ------------------------------------------------------------------
+
+    def set_route(self, route: RouteData, dirty: bool = True) -> None:
+        """Replace the active route and refresh all widgets."""
+        self._route = route
+        self.map_widget.load_route(route)
+        self.elevation_widget.load_route(route)
+        self.right_panel.load_route(route)
+        self._set_dirty(dirty)
+        self._update_status()
 
     # ------------------------------------------------------------------
     # Slots
@@ -108,12 +130,40 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error loading file", str(exc))
             return
 
-        self._route = route
-        self.map_widget.load_route(route)
-        self.elevation_widget.load_route(route)
-        self.right_panel.load_route(route)
-        self.setWindowTitle(f"GPX Editor — {path.name}")
-        self._update_status()
+        self._open_path = path
+        self.set_route(route, dirty=False)
+
+    def _save_as(self) -> None:
+        if self._route is None:
+            return
+
+        # Suggest the original filename in the dialog
+        start_dir = str(self._open_path.parent) if self._open_path else ""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save route as…",
+            start_dir,
+            "GPX file (*.gpx);;TCX file (*.tcx)",
+        )
+        if not path:
+            return
+
+        out = Path(path)
+        # Ensure a recognised extension when the user types a bare filename
+        if out.suffix.lower() not in (".gpx", ".tcx"):
+            out = out.with_suffix(".gpx")
+
+        try:
+            if out.suffix.lower() == ".gpx":
+                write_gpx(self._route, out)
+            else:
+                write_tcx(self._route, out)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Error saving file", str(exc))
+            return
+
+        self._open_path = out
+        self._set_dirty(False)
 
     def _on_track_row_selected(self, row: int, lat: float, lon: float) -> None:
         self.map_widget.zoom_to(lat, lon)
@@ -121,17 +171,47 @@ class MainWindow(QMainWindow):
             dist = float(self._route.track_points["distance"][row])
             self.elevation_widget.move_cursor(dist)
 
+    def _on_elevation_clicked(self, distance_m: float) -> None:
+        if self._route is None or len(self._route.track_points) == 0:
+            return
+        tp = self._route.track_points
+        dists = tp["distance"].to_numpy()
+        idx = int(np.argmin(np.abs(dists - distance_m)))
+        lat = float(tp["lat"][idx])
+        lon = float(tp["lon"][idx])
+        self.map_widget.zoom_to(lat, lon)
+        self.elevation_widget.move_cursor(float(dists[idx]))
+        self.right_panel.select_nearest_distance(float(dists[idx]))
+
     def _on_waypoint_row_selected(self, _row: int, lat: float, lon: float) -> None:
         self.map_widget.zoom_to(lat, lon)
+        if self._route is not None and len(self._route.track_points) > 0:
+            tp = self._route.track_points
+            idx, _ = nearest_index(lat, lon, tp["lat"].to_numpy(), tp["lon"].to_numpy())
+            self.elevation_widget.move_cursor(float(tp["distance"][idx]))
+
+    # ------------------------------------------------------------------
+    # Internal state helpers
+    # ------------------------------------------------------------------
+
+    def _set_dirty(self, dirty: bool) -> None:
+        self._dirty = dirty
+        self._save_act.setEnabled(self._route is not None)
+        self._update_title()
+
+    def _update_title(self) -> None:
+        if self._open_path:
+            marker = " *" if self._dirty else ""
+            self.setWindowTitle(f"GPX Editor — {self._open_path.name}{marker}")
+        else:
+            self.setWindowTitle("GPX Editor")
 
     def _update_status(self) -> None:
         if self._route is None:
             self._status_label.setText("No file loaded")
             return
         tp = self._route.track_points
-        total_km = (
-            float(tp["distance"][-1]) / 1000.0 if len(tp) > 0 else 0.0
-        )
+        total_km = float(tp["distance"][-1]) / 1000.0 if len(tp) > 0 else 0.0
         self._status_label.setText(
             f"{len(tp)} track points  •  "
             f"{len(self._route.cues)} cues  •  "

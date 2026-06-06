@@ -46,8 +46,25 @@ _CUE_ICON: dict[str, tuple[str, str]] = {
 }
 _DEFAULT_CUE_ICON = ("map-marker", "red")
 
-# POI symbol (lower-case) → (Font Awesome icon name, folium color)
-_POI_ICON: dict[str, tuple[str, str]] = {
+# POI name (lower-case) → (Bootstrap Glyphicon name, folium color)
+_POI_NAME_ICON: dict[str, tuple[str, str]] = {
+    # Navigation cues
+    "start":         ("flag",        "green"),
+    "right":         ("arrow-right", "red"),
+    "left":          ("arrow-left",  "red"),
+    "sharp right":   ("arrow-right", "darkred"),
+    "sharp left":    ("arrow-left",  "darkred"),
+    "slight right":  ("arrow-right", "orange"),
+    "slight left":   ("arrow-left",  "orange"),
+    # Climb categories (cadetblue → blue → orange → red = easiest → hardest)
+    "4th category":  ("chevron-up",  "cadetblue"),
+    "3rd category":  ("chevron-up",  "blue"),
+    "2nd category":  ("chevron-up",  "orange"),
+    "1st category":  ("chevron-up",  "red"),
+    # Fuel / pump stations
+    "bp":            ("flash",       "darkgreen"),
+    "omv":           ("flash",       "red"),
+    # Points of interest
     "coffee":        ("coffee",      "beige"),
     "food":          ("cutlery",     "beige"),
     "restaurant":    ("cutlery",     "beige"),
@@ -111,10 +128,10 @@ class MapWidget(QWebEngineView):
                 icon=folium.Icon(color=color, icon=icon_name),
             ).add_to(m)
 
-        # POI markers — icon mapped from symbol column
+        # POI markers — icon mapped from name column
         for row in route.pois.iter_rows(named=True):
-            symbol_key = (row["symbol"] or "").lower()
-            icon_name, color = _POI_ICON.get(symbol_key, _DEFAULT_POI_ICON)
+            name_key = (row["name"] or "").lower()
+            icon_name, color = _POI_NAME_ICON.get(name_key, _DEFAULT_POI_ICON)
             folium.Marker(
                 [row["lat"], row["lon"]],
                 popup=folium.Popup(

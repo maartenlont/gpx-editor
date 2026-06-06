@@ -8,11 +8,15 @@ matplotlib.use("QtAgg")  # must be set before pyplot import
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from PySide6.QtCore import Signal
 
 from gpx_editor.models.route import RouteData
 
 
 class ElevationWidget(FigureCanvasQTAgg):
+    # Emits distance in metres when the user clicks on the chart
+    location_clicked = Signal(float)
+
     def __init__(self, parent=None) -> None:
         fig = Figure(figsize=(5, 2))
         fig.subplots_adjust(left=0.08, right=0.99, top=0.92, bottom=0.22)
@@ -20,6 +24,7 @@ class ElevationWidget(FigureCanvasQTAgg):
         self._ax = fig.add_subplot(111)
         self._cursor: Line2D | None = None
         self._clear_axes()
+        self.mpl_connect("button_press_event", self._on_click)
 
     # ------------------------------------------------------------------
     # Public API
@@ -55,6 +60,11 @@ class ElevationWidget(FigureCanvasQTAgg):
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _on_click(self, event) -> None:
+        if event.inaxes != self._ax or event.xdata is None:
+            return
+        self.location_clicked.emit(event.xdata * 1000.0)  # km → metres
 
     def _clear_axes(self) -> None:
         self._ax.set_xlabel("Distance (km)", fontsize=8)

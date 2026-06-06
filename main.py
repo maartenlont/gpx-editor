@@ -1,6 +1,4 @@
-def main():
-    print("Hello from gpx-editor!")
-
+from gpx_editor.app import run
 
 if __name__ == "__main__":
-    main()
+    run()
