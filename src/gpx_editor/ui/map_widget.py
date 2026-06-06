@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
 
-import html as _html
-import json
-
-import numpy as np
 import folium
+import numpy as np
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEngineSettings
@@ -20,9 +18,15 @@ from gpx_editor.models.route import RouteData
 from gpx_editor.models.route_entry import RouteEntry
 from gpx_editor.ui.poi_icons import (
     CUE_ICON as _CUE_ICON,
+)
+from gpx_editor.ui.poi_icons import (
     DEFAULT_CUE_ICON as _DEFAULT_CUE_ICON,
-    POI_NAME_ICON as _POI_NAME_ICON,
+)
+from gpx_editor.ui.poi_icons import (
     DEFAULT_POI_ICON as _DEFAULT_POI_ICON,
+)
+from gpx_editor.ui.poi_icons import (
+    POI_NAME_ICON as _POI_NAME_ICON,
 )
 
 _PLACEHOLDER_HTML = """
@@ -96,9 +100,9 @@ _OSM_SYMBOL_PICTOGRAM: dict[str, str] = {
 # a global helper so popup buttons can reach the Python backend.
 _OSM_LAYER_JS = """
 window._osmLayer = L.layerGroup().addTo(window._gpxMap);
-window._addOsmPoi = function(lat, lon, name, desc, symbol) {
+window._addOsmPoi = function(lat, lon, name, desc, symbol, wptype) {
     if (typeof backend !== 'undefined') {
-        backend.onOsmPoiAdd(lat, lon, name, desc, symbol);
+        backend.onOsmPoiAdd(lat, lon, name, desc, symbol, wptype);
     }
 };
 """
@@ -125,29 +129,29 @@ class _MapBackend(QObject):
     """Thin QObject bridge: Leaflet JS ↔ Python signals."""
 
     map_clicked = Signal(float, float)
-    osm_poi_add = Signal(float, float, str, str, str)
+    osm_poi_add = Signal(float, float, str, str, str, str)  # lat, lon, name, desc, symbol, wptype
 
     @Slot(float, float)
     def onMapClick(self, lat: float, lon: float) -> None:
         self.map_clicked.emit(lat, lon)
 
-    @Slot(float, float, str, str, str)
+    @Slot(float, float, str, str, str, str)
     def onOsmPoiAdd(
-        self, lat: float, lon: float, name: str, description: str, symbol: str
+        self, lat: float, lon: float, name: str, description: str, symbol: str, wptype: str,
     ) -> None:
-        self.osm_poi_add.emit(lat, lon, name, description, symbol)
+        self.osm_poi_add.emit(lat, lon, name, description, symbol, wptype)
 
 
 class MapWidget(QWebEngineView):
     # Emitted when the user clicks the map while "+ POI" mode is active.
     poi_requested = Signal(float, float)
-    # Emitted when the user right-clicks an OSM overlay marker.
-    osm_poi_add = Signal(float, float, str, str, str)
+    # Emitted when the user clicks an OSM overlay marker button (cue or poi).
+    osm_poi_add = Signal(float, float, str, str, str, str)  # lat, lon, name, desc, symbol, wptype
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.settings().setAttribute(
-            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True,
         )
         self._tmp_path: str | None = None
         self._map_js_name: str | None = None
@@ -237,7 +241,7 @@ class MapWidget(QWebEngineView):
     def zoom_to(self, lat: float, lon: float, zoom: int = 16) -> None:
         if self._map_ready:
             self.page().runJavaScript(
-                f"if (window._gpxMap) {{ window._gpxMap.setView([{lat}, {lon}], {zoom}); }}"
+                f"if (window._gpxMap) {{ window._gpxMap.setView([{lat}, {lon}], {zoom}); }}",
             )
 
     def load_osm_pois(self, df) -> None:
@@ -272,7 +276,7 @@ class MapWidget(QWebEngineView):
         self._osm_df = None
         if self._map_ready:
             self.page().runJavaScript(
-                "if (window._osmLayer) { window._osmLayer.clearLayers(); }"
+                "if (window._osmLayer) { window._osmLayer.clearLayers(); }",
             )
 
     def get_viewport_bbox(self, callback) -> None:
@@ -316,7 +320,10 @@ class MapWidget(QWebEngineView):
     var popLines = ['<b>' + name + '</b>'];
     if (d.desc) popLines.push(d.desc);
     popLines.push('<i>Type: ' + d.symbol + '</i>');
-    popLines.push('<button class="osm-add-btn" style="margin-top:6px;padding:3px 8px;cursor:pointer">+ Add to Track</button>');
+    popLines.push('<div style="margin-top:6px;display:flex;gap:4px;">');
+    popLines.push('<button class="osm-add-cue-btn" style="padding:3px 8px;cursor:pointer;background:#E65100;color:white;border:none;border-radius:3px">+ Cue</button>');
+    popLines.push('<button class="osm-add-poi-btn" style="padding:3px 8px;cursor:pointer;background:#2E7D32;color:white;border:none;border-radius:3px">+ POI</button>');
+    popLines.push('</div>');
     var icon = L.divIcon({{
       html: '<div style="display:flex;align-items:center;justify-content:center;' +
             'width:28px;height:28px;border-radius:50%;background:#1565C0;' +
@@ -329,11 +336,16 @@ class MapWidget(QWebEngineView):
     }});
     var m = L.marker([d.lat, d.lon], {{ icon: icon }});
     m.bindTooltip(tipHtml, {{sticky:true}});
-    m.bindPopup(popLines.join('<br>'), {{maxWidth:240}});
+    m.bindPopup(popLines.join('<br>'), {{maxWidth:260}});
     m.on('popupopen', function() {{
-      var btn = m.getPopup().getElement().querySelector('.osm-add-btn');
-      if (btn) btn.addEventListener('click', function() {{
-        window._addOsmPoi(d.lat, d.lon, d.name, d.desc, d.symbol);
+      var popup = m.getPopup().getElement();
+      var cueBtn = popup.querySelector('.osm-add-cue-btn');
+      var poiBtn = popup.querySelector('.osm-add-poi-btn');
+      if (cueBtn) cueBtn.addEventListener('click', function() {{
+        window._addOsmPoi(d.lat, d.lon, d.name, d.desc, d.symbol, 'cue');
+      }});
+      if (poiBtn) poiBtn.addEventListener('click', function() {{
+        window._addOsmPoi(d.lat, d.lon, d.name, d.desc, d.symbol, 'poi');
       }});
     }});
     m.addTo(window._osmLayer);
@@ -432,7 +444,7 @@ class MapWidget(QWebEngineView):
                 if self._restore_view is not None:
                     lat, lng, zoom = self._restore_view
                     self.page().runJavaScript(
-                        f"window._gpxMap.setView([{lat},{lng}],{zoom},{{animate:false}});"
+                        f"window._gpxMap.setView([{lat},{lng}],{zoom},{{animate:false}});",
                     )
                     self._restore_view = None
                 self._inject_osm_pois()

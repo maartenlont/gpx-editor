@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import polars as pl
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QTabWidget
 
-import polars as pl
-
-from gpx_editor.models.route import RouteData, empty_cues, empty_pois, empty_track_points
+from gpx_editor.models.route import (
+    RouteData,
+    empty_cues,
+    empty_pois,
+    empty_track_points,
+)
 from gpx_editor.models.route_entry import RouteEntry
 from gpx_editor.ui.dataframe_table import DataFrameTableWidget
 from gpx_editor.ui.poi_icons import poi_icon_for_row
@@ -34,7 +38,7 @@ class RightPanel(QTabWidget):
         # Tabs 1, 2, 3: data tables
         self.track_table = DataFrameTableWidget(empty_track_points())
         self.cue_table = DataFrameTableWidget(
-            empty_cues(), editable_cols=["name", "cue_type", "description"]
+            empty_cues(), editable_cols=["name", "cue_type", "description"],
         )
         self.poi_table = DataFrameTableWidget(
             empty_pois(),
@@ -55,13 +59,19 @@ class RightPanel(QTabWidget):
         """Delegate to the route list widget."""
         self.route_list.set_routes(entries, active_index)
 
+    def focus_cue(self, index_val: int) -> None:
+        """Switch to the Cues tab and select the row with the given stable index."""
+        self.setCurrentIndex(2)
+        self.cue_table.select_row_by_index_val(index_val)
+
     def focus_poi(self, index_val: int) -> None:
         """Switch to the POIs tab and select the row with the given stable index."""
         self.setCurrentIndex(3)
         self.poi_table.select_row_by_index_val(index_val)
 
     def select_nearest_distance(self, distance_m: float) -> None:
-        """Select the nearest row in whichever data tab is currently visible.
+        """
+        Select the nearest row in whichever data tab is currently visible.
 
         Tab index 0 is the Routes tab; data tabs are at indices 1, 2, 3.
         """

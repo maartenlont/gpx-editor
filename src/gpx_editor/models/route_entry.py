@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
+
 from gpx_editor.models.route import RouteData
 
 PALETTE: list[tuple[str, str]] = [

@@ -56,7 +56,7 @@ class RouteListWidget(QWidget):
         layout.addWidget(self._table)
 
         self._table.selectionModel().currentRowChanged.connect(
-            lambda current, _prev: self._on_current_row_changed(current.row())
+            lambda current, _prev: self._on_current_row_changed(current.row()),
         )
         self._table.itemChanged.connect(self._on_item_changed)
 
@@ -90,7 +90,7 @@ class RouteListWidget(QWidget):
                     combo.setCurrentIndex(i)
                     break
             combo.currentIndexChanged.connect(
-                lambda _idx, r=row_idx, c=combo: self._on_color_changed(r, c)
+                lambda _idx, r=row_idx, c=combo: self._on_color_changed(r, c),
             )
             self._table.setCellWidget(row_idx, 1, combo)
 
@@ -103,7 +103,7 @@ class RouteListWidget(QWidget):
             remove_btn = QPushButton("×")
             remove_btn.setFixedWidth(28)
             remove_btn.clicked.connect(
-                lambda _checked=False, r=row_idx: self.route_removed.emit(r)
+                lambda _checked=False, r=row_idx: self.route_removed.emit(r),
             )
             self._table.setCellWidget(row_idx, 3, remove_btn)
 
@@ -159,7 +159,7 @@ class RouteListWidget(QWidget):
             item = self._table.item(row, 2)
             current = item.text() if item else ""
             new_label, ok = QInputDialog.getText(
-                self._table, "Rename route", "Label:", text=current
+                self._table, "Rename route", "Label:", text=current,
             )
             if ok and new_label.strip():
                 self.route_renamed.emit(row, new_label.strip())

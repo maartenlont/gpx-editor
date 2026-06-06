@@ -38,7 +38,7 @@ class RowEditDialog(QDialog):
         layout.addLayout(form)
 
         btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
         )
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
@@ -49,5 +49,5 @@ class RowEditDialog(QDialog):
         result = {}
         for col, le in self._fields.items():
             text = le.text().strip()
-            result[col] = text if text else None
+            result[col] = text or None
         return result

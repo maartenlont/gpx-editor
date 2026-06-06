@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import polars as pl
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
@@ -58,8 +58,8 @@ class DataFrameModel(QAbstractTableModel):
         return None
 
     def headerData(
-        self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole
-    ) -> Optional[str]:
+        self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole,
+    ) -> str | None:
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
             return self._cols[section]
         return None
@@ -70,7 +70,7 @@ class DataFrameModel(QAbstractTableModel):
         self._cols = [c for c in df.columns if c not in self._hidden]
         self.endResetModel()
 
-    def row_lat_lon(self, row: int) -> Optional[tuple[float, float]]:
+    def row_lat_lon(self, row: int) -> tuple[float, float] | None:
         if "lat" not in self._df.columns or "lon" not in self._df.columns:
             return None
         if row >= len(self._df):
@@ -91,7 +91,7 @@ class DataFrameTableWidget(QWidget):
 
     def __init__(
         self,
-        df: Optional[pl.DataFrame] = None,
+        df: pl.DataFrame | None = None,
         icon_col: str | None = None,
         icon_fn: Callable[[dict], QIcon] | None = None,
         editable_cols: list[str] | None = None,
@@ -135,7 +135,8 @@ class DataFrameTableWidget(QWidget):
         self._fix_icon_col_width()
 
     def select_row_by_index_val(self, index_val: int) -> None:
-        """Select and scroll to the row whose 'index' column equals *index_val*.
+        """
+        Select and scroll to the row whose 'index' column equals *index_val*.
 
         Signals are blocked so the selection doesn't trigger map zoom.
         """
@@ -152,7 +153,8 @@ class DataFrameTableWidget(QWidget):
         self._view.scrollTo(self._model.index(row, 0))
 
     def select_nearest_distance(self, distance_m: float) -> None:
-        """Select and scroll to the row whose distance is closest to *distance_m*.
+        """
+        Select and scroll to the row whose distance is closest to *distance_m*.
 
         Signals are blocked during the programmatic selection to avoid a
         feedback loop back into the elevation widget / map.

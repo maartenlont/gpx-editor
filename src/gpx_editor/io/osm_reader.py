@@ -60,7 +60,8 @@ def query_osm_pois(
     buffer_m: float,
     timeout: int = 60,
 ) -> pl.DataFrame:
-    """Query Overpass for nodes/ways within *buffer_m* metres of the track polyline.
+    """
+    Query Overpass for nodes/ways within *buffer_m* metres of the track polyline.
 
     Uses the Overpass ``around:RADIUS,lat,lon,...`` filter, which queries a true
     corridor around the track rather than a bounding box, so dense urban areas

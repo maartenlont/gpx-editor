@@ -79,3 +79,69 @@ class TestRoundTrip:
         write_gpx(original, out)
         # Should not raise
         ET.parse(out)
+
+
+class TestRideWithGPSCompatibility:
+    def test_rwgps_mode_writes_rte_element(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        original = read_gpx_string(SAMPLE_GPX)
+        out = tmp_path / "out.gpx"
+        write_gpx(original, out, rwgps_compatible=True)
+        tree = ET.parse(out)
+        root = tree.getroot()
+        ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
+        rte = root.find("gpx:rte", ns)
+        assert rte is not None, "Expected <rte> element in RWGPS mode"
+
+    def test_rwgps_mode_cues_as_rtept(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        original = read_gpx_string(SAMPLE_GPX)
+        out = tmp_path / "out.gpx"
+        write_gpx(original, out, rwgps_compatible=True)
+        tree = ET.parse(out)
+        root = tree.getroot()
+        ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
+        rte = root.find("gpx:rte", ns)
+        rtepts = rte.findall("gpx:rtept", ns)
+        assert len(rtepts) == 1, "Expected 1 rtept for the cue"
+
+    def test_rwgps_mode_has_cue_extension(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        original = read_gpx_string(SAMPLE_GPX)
+        out = tmp_path / "out.gpx"
+        write_gpx(original, out, rwgps_compatible=True)
+        tree = ET.parse(out)
+        root = tree.getroot()
+        ns = {
+            "gpx": "http://www.topografix.com/GPX/1/1",
+            "rwgps": "http://ridewithgps.com/rte",
+        }
+        rtept = root.find(".//gpx:rtept", ns)
+        ext = rtept.find("gpx:extensions", ns)
+        cue = ext.find("rwgps:cue", ns)
+        assert cue is not None
+        assert cue.text == "Left"
+
+    def test_rwgps_mode_pois_still_as_wpt(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        original = read_gpx_string(SAMPLE_GPX)
+        out = tmp_path / "out.gpx"
+        write_gpx(original, out, rwgps_compatible=True)
+        tree = ET.parse(out)
+        root = tree.getroot()
+        ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
+        wpts = root.findall("gpx:wpt", ns)
+        # Only POIs should be wpt (cues go to rte/rtept)
+        assert len(wpts) == 1
+        assert wpts[0].find("gpx:name", ns).text == "Coffee stop"
+
+    def test_default_mode_no_rte_element(self, tmp_path):
+        import xml.etree.ElementTree as ET
+        original = read_gpx_string(SAMPLE_GPX)
+        out = tmp_path / "out.gpx"
+        write_gpx(original, out, rwgps_compatible=False)
+        tree = ET.parse(out)
+        root = tree.getroot()
+        ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
+        rte = root.find("gpx:rte", ns)
+        assert rte is None, "Default mode should not have <rte> element"

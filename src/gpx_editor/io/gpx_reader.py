@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import polars as pl
 
+from gpx_editor.io._course_point_types import garmin_to_symbol, is_nav_type, to_garmin
 from gpx_editor.io._distance import cumulative_distance, nearest_index
 from gpx_editor.models.route import RouteData
 
@@ -22,20 +22,12 @@ _NS = {
     "gpxx": "http://www.garmin.com/xmlschemas/GpxExtensions/v3",
 }
 
-# Waypoint <type> values treated as cues (case-insensitive prefix match).
-_CUE_TYPES = {
-    "left", "right", "straight", "slight left", "slight right",
-    "sharp left", "sharp right", "u-turn", "uturn",
-    "turn left", "turn right", "bear left", "bear right",
-    "continue", "fork left", "fork right", "roundabout",
-}
-
 
 def _tag(ns_key: str, local: str) -> str:
     return f"{{{_NS[ns_key]}}}{local}"
 
 
-def _find_text(el: ET.Element, *path: str, ns: str = "gpx") -> Optional[str]:
+def _find_text(el: ET.Element, *path: str, ns: str = "gpx") -> str | None:
     """Walk a dotted path under *el* using the given namespace prefix."""
     node = el
     for part in path:
@@ -45,20 +37,18 @@ def _find_text(el: ET.Element, *path: str, ns: str = "gpx") -> Optional[str]:
     return node.text
 
 
-def _parse_time(text: Optional[str]) -> Optional[datetime]:
+def _parse_time(text: str | None) -> datetime | None:
     if not text:
         return None
     text = text.rstrip("Z")
     try:
-        return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(text).replace(tzinfo=UTC)
     except ValueError:
         return None
 
 
-def _is_cue_type(type_text: Optional[str]) -> bool:
-    if not type_text:
-        return False
-    return type_text.strip().lower() in _CUE_TYPES
+def _is_cue_type(type_text: str | None) -> bool:
+    return is_nav_type(type_text or "")
 
 
 def _garmin_categories(wpt: ET.Element) -> list[str]:
@@ -87,7 +77,7 @@ def _classify_wpt(wpt: ET.Element) -> str:
     return "poi"
 
 
-def _trkpt_extensions(trkpt: ET.Element) -> tuple[Optional[int], Optional[int], Optional[int]]:
+def _trkpt_extensions(trkpt: ET.Element) -> tuple[int | None, int | None, int | None]:
     """Return (hr, cadence, power) from Garmin TrackPointExtension."""
     ext = trkpt.find(_tag("gpx", "extensions"))
     if ext is None:
@@ -96,7 +86,7 @@ def _trkpt_extensions(trkpt: ET.Element) -> tuple[Optional[int], Optional[int], 
     if tpe is None:
         return None, None, None
 
-    def _int(tag: str) -> Optional[int]:
+    def _int(tag: str) -> int | None:
         el = tpe.find(_tag("gpxtpx", tag))
         try:
             return int(el.text) if el is not None and el.text else None
@@ -186,7 +176,7 @@ def _parse_track_points(root: ET.Element) -> pl.DataFrame:
 
 
 def _parse_waypoints(
-    root: ET.Element, track_points: pl.DataFrame
+    root: ET.Element, track_points: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     from gpx_editor.models.route import empty_cues, empty_pois
 
@@ -220,17 +210,19 @@ def _parse_waypoints(
                 "lon": lon,
                 "name": name,
                 "description": desc,
-                "cue_type": type_text,
+                "cue_type": to_garmin(type_text, type_text),
                 "distance": dist,
             })
         else:
+            # If <sym> is absent, derive a symbol from the Garmin <type> string.
+            resolved_sym = sym or garmin_to_symbol(type_text)
             poi_rows.append({
                 "index": len(poi_rows),
                 "lat": lat,
                 "lon": lon,
                 "name": name,
                 "description": desc,
-                "symbol": sym,
+                "symbol": resolved_sym,
                 "distance": dist,
             })
 

@@ -14,7 +14,8 @@ def copy_cues_pois(
     target: RouteData,
     threshold_m: float = 10.0,
 ) -> RouteData:
-    """Return a new RouteData with cues/POIs from *source* merged into *target*.
+    """
+    Return a new RouteData with cues/POIs from *source* merged into *target*.
 
     For each cue/POI in *source*, the nearest track point in *target* is found.
     If that distance is ≤ *threshold_m*, the item is copied with lat/lon/distance
@@ -57,8 +58,10 @@ def _filter_and_snap(
     threshold_m: float,
     empty_factory,
 ) -> pl.DataFrame:
-    """Return rows of *waypoints* that are within *threshold_m* of a target track
-    point, with lat/lon/distance replaced by the snapped track-point values."""
+    """
+    Return rows of *waypoints* that are within *threshold_m* of a target track
+    point, with lat/lon/distance replaced by the snapped track-point values.
+    """
     if len(waypoints) == 0:
         return empty_factory()
 
@@ -85,6 +88,6 @@ def _combine(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
     combined = pl.concat([existing, new]) if len(existing) > 0 else new
     combined = combined.sort("distance")
     combined = combined.with_columns(
-        pl.Series("index", list(range(len(combined))), dtype=pl.Int64)
+        pl.Series("index", list(range(len(combined))), dtype=pl.Int64),
     )
     return combined

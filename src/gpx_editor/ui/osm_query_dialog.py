@@ -33,7 +33,7 @@ class OsmQueryDialog(QDialog):
         form.addRow("Buffer:", self._buffer_spin)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Query")
         buttons.accepted.connect(self.accept)

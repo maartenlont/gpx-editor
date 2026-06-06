@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
+from gpx_editor.io._course_point_types import symbol_to_garmin, to_garmin
 from gpx_editor.models.route import RouteData
 
 _NS = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
@@ -54,7 +55,7 @@ def write_tcx(route: RouteData, path: str | Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _write_course_points(
-    course: ET.Element, cues: pl.DataFrame, pois: pl.DataFrame
+    course: ET.Element, cues: pl.DataFrame, pois: pl.DataFrame,
 ) -> None:
     for row in cues.iter_rows(named=True):
         cp = _sub(course, "CoursePoint")
@@ -62,7 +63,7 @@ def _write_course_points(
         pos = _sub(cp, "Position")
         _sub(pos, "LatitudeDegrees", str(row["lat"]))
         _sub(pos, "LongitudeDegrees", str(row["lon"]))
-        _sub(cp, "PointType", row["cue_type"] or "Generic")
+        _sub(cp, "PointType", to_garmin(row["cue_type"] or "", "Left"))
         if row["description"]:
             _sub(cp, "Notes", row["description"])
 
@@ -72,7 +73,7 @@ def _write_course_points(
         pos = _sub(cp, "Position")
         _sub(pos, "LatitudeDegrees", str(row["lat"]))
         _sub(pos, "LongitudeDegrees", str(row["lon"]))
-        _sub(cp, "PointType", "Generic")
+        _sub(cp, "PointType", symbol_to_garmin(row["symbol"] or ""))
         if row["description"]:
             _sub(cp, "Notes", row["description"])
 

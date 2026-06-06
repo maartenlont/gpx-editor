@@ -6,14 +6,17 @@ from pathlib import Path
 
 import numpy as np
 import polars as pl
-
-from PySide6.QtCore import Qt, QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QVBoxLayout,
 )
 
 _RECENT_KEY = "recent_files"
@@ -21,12 +24,14 @@ _RECENT_MAX = 5
 _QSETTINGS_ARGS = ("gpx-editor", "gpx-editor")
 
 from gpx_editor.io._distance import nearest_index
+from gpx_editor.io.fit_reader import read_fit
+from gpx_editor.io.fit_writer import write_fit
 from gpx_editor.io.gpx_reader import read_gpx
 from gpx_editor.io.gpx_writer import write_gpx
 from gpx_editor.io.osm_reader import OSM_CATEGORIES, query_osm_pois
 from gpx_editor.io.tcx_reader import read_tcx
 from gpx_editor.io.tcx_writer import write_tcx
-from gpx_editor.models.route import POIS_SCHEMA, RouteData
+from gpx_editor.models.route import CUES_SCHEMA, POIS_SCHEMA, RouteData
 from gpx_editor.models.route_entry import RouteEntry, next_color
 from gpx_editor.ui.elevation_widget import ElevationWidget
 from gpx_editor.ui.map_widget import MapWidget
@@ -141,7 +146,7 @@ class MainWindow(QMainWindow):
             self,
             "Open GPX / TCX file(s)",
             start,
-            "Route files (*.gpx *.tcx);;GPX files (*.gpx);;TCX files (*.tcx)",
+            "Route files (*.gpx *.tcx *.fit);;GPX files (*.gpx);;TCX files (*.tcx);;FIT files (*.fit)",
         )
         for path in paths:
             self._load_path(Path(path))
@@ -236,10 +241,13 @@ class MainWindow(QMainWindow):
 
     def _read_file(self, path: Path):
         try:
-            if path.suffix.lower() == ".gpx":
+            suffix = path.suffix.lower()
+            if suffix == ".gpx":
                 return read_gpx(path)
-            if path.suffix.lower() == ".tcx":
+            if suffix == ".tcx":
                 return read_tcx(path)
+            if suffix == ".fit":
+                return read_fit(path)
             QMessageBox.warning(self, "Unsupported format", f"Unknown file type: {path.suffix}")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Error loading file", str(exc))
@@ -250,27 +258,59 @@ class MainWindow(QMainWindow):
             return
         active_entry = self._routes[self._active_index]
         start_dir = str(self._open_path.parent) if self._open_path else ""
-        path, _ = QFileDialog.getSaveFileName(
+        path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save route as…",
             start_dir,
-            "GPX file (*.gpx);;TCX file (*.tcx)",
+            "GPX file (*.gpx);;TCX file (*.tcx);;FIT file (*.fit)",
         )
         if not path:
             return
         out = Path(path)
-        if out.suffix.lower() not in (".gpx", ".tcx"):
+        if out.suffix.lower() not in (".gpx", ".tcx", ".fit"):
             out = out.with_suffix(".gpx")
+
+        rwgps_compat = False
+        if out.suffix.lower() == ".gpx":
+            rwgps_compat = self._ask_rwgps_compatibility()
+            if rwgps_compat is None:
+                return
+
         try:
-            if out.suffix.lower() == ".gpx":
-                write_gpx(active_entry.route, out)
-            else:
+            suffix = out.suffix.lower()
+            if suffix == ".gpx":
+                write_gpx(active_entry.route, out, rwgps_compatible=rwgps_compat)
+            elif suffix == ".tcx":
                 write_tcx(active_entry.route, out)
+            else:
+                write_fit(active_entry.route, out)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Error saving file", str(exc))
             return
         self._open_path = out
         self._set_dirty(False)
+
+    def _ask_rwgps_compatibility(self) -> bool | None:
+        """Show dialog asking about RideWithGPS compatibility. Returns None if cancelled."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("GPX Export Options")
+        layout = QVBoxLayout(dialog)
+
+        checkbox = QCheckBox("RideWithGPS compatible (export cues as route points)")
+        checkbox.setToolTip(
+            "Enable this to see turn-by-turn cues in RideWithGPS.\n"
+            "Cues will be written as route points with rwgps extensions.",
+        )
+        layout.addWidget(checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() == QDialog.Accepted:
+            return checkbox.isChecked()
+        return None
 
     # ------------------------------------------------------------------
     # Merge slot
@@ -350,7 +390,7 @@ class MainWindow(QMainWindow):
         if 0 <= index < len(self._routes):
             e = self._routes[index]
             self._routes[index] = RouteEntry(
-                route=e.route, color=e.color, label=label, visible=e.visible
+                route=e.route, color=e.color, label=label, visible=e.visible,
             )
             self._set_dirty(True)
             self._refresh_view()
@@ -441,7 +481,7 @@ class MainWindow(QMainWindow):
             source_file=r.source_file,
         )
         self._routes[self._active_index] = RouteEntry(
-            route=new_route, color=e.color, label=e.label, visible=e.visible
+            route=new_route, color=e.color, label=e.label, visible=e.visible,
         )
         self._set_dirty(True)
         self._refresh_view()
@@ -475,11 +515,11 @@ class MainWindow(QMainWindow):
                 # long route only queries the visible section.
                 visible_tp = tp.filter(
                     (pl.col("lat") >= vs) & (pl.col("lat") <= vn) &
-                    (pl.col("lon") >= vw) & (pl.col("lon") <= ve)
+                    (pl.col("lon") >= vw) & (pl.col("lon") <= ve),
                 )
                 if len(visible_tp) == 0:
                     self._status_label.setText(
-                        "No track visible in current map view — pan to the route first."
+                        "No track visible in current map view — pan to the route first.",
                     )
                     return
             else:
@@ -514,16 +554,17 @@ class MainWindow(QMainWindow):
             suffix = " (cached)" if cached else ""
             self._status_label.setText(
                 f"Found {n} OSM POI{'s' if n != 1 else ''}{suffix}"
-                " — click a marker to add to track"
+                " — click a marker to add to track",
             )
             self.map_widget.load_osm_pois(df)
 
         self.map_widget.get_viewport_bbox(_run_query)
 
     def _on_osm_poi_add(
-        self, lat: float, lon: float, name: str, description: str, symbol: str
+        self, lat: float, lon: float, name: str, description: str, symbol: str, wptype: str,
     ) -> None:
-        """User right-clicked an OSM marker: snap to track and append to active POIs.
+        """
+        User clicked an OSM marker button: snap to track and append as cue or POI.
 
         Intentionally skips map reload so zoom/pan and OSM overlay are preserved.
         """
@@ -539,48 +580,75 @@ class MainWindow(QMainWindow):
         snap_lon = float(tp["lon"][snap_idx])
         snap_dist = float(tp["distance"][snap_idx])
 
-        existing = route.pois
-        if len(existing) > 0:
-            max_idx = existing["index"].max()
-            next_idx = (int(max_idx) if max_idx is not None else 0) + 1
-        else:
-            next_idx = 0
-
         display_name = name.strip() if name.strip() else symbol or "OSM POI"
 
-        new_poi = pl.DataFrame(
-            {
-                "index":       [next_idx],
-                "lat":         [snap_lat],
-                "lon":         [snap_lon],
-                "name":        [display_name],
-                "description": [description or None],
-                "symbol":      [symbol or None],
-                "distance":    [snap_dist],
-            },
-            schema=POIS_SCHEMA,
-        )
-        new_pois = pl.concat([existing, new_poi])
+        if wptype == "cue":
+            existing = route.cues
+            if len(existing) > 0:
+                max_idx = existing["index"].max()
+                next_idx = (int(max_idx) if max_idx is not None else 0) + 1
+            else:
+                next_idx = 0
+
+            new_cue = pl.DataFrame(
+                {
+                    "index":       [next_idx],
+                    "lat":         [snap_lat],
+                    "lon":         [snap_lon],
+                    "name":        [display_name],
+                    "description": [description or None],
+                    "cue_type":    [symbol or None],
+                    "distance":    [snap_dist],
+                },
+                schema=CUES_SCHEMA,
+            )
+            new_cues = pl.concat([existing, new_cue])
+            new_pois = route.pois
+        else:
+            existing = route.pois
+            if len(existing) > 0:
+                max_idx = existing["index"].max()
+                next_idx = (int(max_idx) if max_idx is not None else 0) + 1
+            else:
+                next_idx = 0
+
+            new_poi = pl.DataFrame(
+                {
+                    "index":       [next_idx],
+                    "lat":         [snap_lat],
+                    "lon":         [snap_lon],
+                    "name":        [display_name],
+                    "description": [description or None],
+                    "symbol":      [symbol or None],
+                    "distance":    [snap_dist],
+                },
+                schema=POIS_SCHEMA,
+            )
+            new_pois = pl.concat([existing, new_poi])
+            new_cues = route.cues
 
         # Update route data in-memory without triggering a map reload.
         e = self._routes[self._active_index]
         r = e.route
         new_route = RouteData(
             track_points=r.track_points,
-            cues=r.cues,
+            cues=new_cues,
             pois=new_pois,
             source_file=r.source_file,
         )
         self._routes[self._active_index] = RouteEntry(
-            route=new_route, color=e.color, label=e.label, visible=e.visible
+            route=new_route, color=e.color, label=e.label, visible=e.visible,
         )
         # Refresh only tables and status bar — map stays at current zoom/pan.
         self.right_panel.load_route(new_route)
         self._set_dirty(True)
         self._update_status()
-        # Inject the new marker and jump the POI table to it.
+        # Inject the new marker and focus the appropriate table.
         self.map_widget.add_poi_marker(snap_lat, snap_lon, display_name, symbol or "generic")
-        self.right_panel.focus_poi(next_idx)
+        if wptype == "cue":
+            self.right_panel.focus_cue(next_idx)
+        else:
+            self.right_panel.focus_poi(next_idx)
 
     # ------------------------------------------------------------------
     # Row-selection slots
@@ -642,7 +710,7 @@ class MainWindow(QMainWindow):
         self._save_act.setEnabled(has_active)
         self._osm_act.setEnabled(
             has_active
-            and len(self._routes[self._active_index].route.track_points) > 0
+            and len(self._routes[self._active_index].route.track_points) > 0,
         )
         self._update_title()
 
@@ -667,5 +735,5 @@ class MainWindow(QMainWindow):
             f"{len(route.cues)} cues  •  "
             f"{len(route.pois)} POIs  •  "
             f"{total_km:.1f} km"
-            f"{routes_info}"
+            f"{routes_info}",
         )

@@ -3,31 +3,24 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import polars as pl
 
+from gpx_editor.io._course_point_types import garmin_to_symbol, is_nav_type, to_garmin
 from gpx_editor.io._distance import cumulative_distance, nearest_index
 from gpx_editor.models.route import RouteData
 
 _NS = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
-
-# TCX CoursePoint PointTypes that map to cues (everything else → POI / Generic)
-_CUE_POINT_TYPES = {
-    "Left", "Right", "Straight", "SlightLeft", "SlightRight",
-    "SharpLeft", "SharpRight", "UTurn", "BearLeft", "BearRight",
-    "Fork Left", "Fork Right", "Roundabout",
-}
 
 
 def _t(local: str) -> str:
     return f"{{{_NS}}}{local}"
 
 
-def _text(el: ET.Element, *path: str) -> Optional[str]:
+def _text(el: ET.Element, *path: str) -> str | None:
     node = el
     for part in path:
         node = node.find(_t(part))
@@ -36,20 +29,18 @@ def _text(el: ET.Element, *path: str) -> Optional[str]:
     return node.text
 
 
-def _parse_time(text: Optional[str]) -> Optional[datetime]:
+def _parse_time(text: str | None) -> datetime | None:
     if not text:
         return None
     text = text.rstrip("Z")
     try:
-        return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(text).replace(tzinfo=UTC)
     except ValueError:
         return None
 
 
-def _is_cue(point_type: Optional[str]) -> bool:
-    if not point_type:
-        return False
-    return point_type.strip() in _CUE_POINT_TYPES
+def _is_cue(point_type: str | None) -> bool:
+    return is_nav_type(point_type or "")
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +145,7 @@ def _parse_track_points(root: ET.Element) -> pl.DataFrame:
 
 
 def _parse_course_points(
-    root: ET.Element, track_points: pl.DataFrame
+    root: ET.Element, track_points: pl.DataFrame,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     from gpx_editor.models.route import empty_cues, empty_pois
 
@@ -186,6 +177,7 @@ def _parse_course_points(
         else:
             dist = 0.0
 
+        canonical = to_garmin(point_type, point_type)
         if _is_cue(point_type):
             cue_rows.append({
                 "index": len(cue_rows),
@@ -193,7 +185,7 @@ def _parse_course_points(
                 "lon": lon,
                 "name": name,
                 "description": notes,
-                "cue_type": point_type,
+                "cue_type": canonical,
                 "distance": dist,
             })
         else:
@@ -203,7 +195,7 @@ def _parse_course_points(
                 "lon": lon,
                 "name": name,
                 "description": notes,
-                "symbol": point_type,
+                "symbol": garmin_to_symbol(point_type),
                 "distance": dist,
             })
 

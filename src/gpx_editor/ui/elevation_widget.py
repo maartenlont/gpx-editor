@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import matplotlib
+
 matplotlib.use("QtAgg")  # must be set before pyplot import
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -13,12 +14,12 @@ from PySide6.QtCore import Signal
 from gpx_editor.models.route import RouteData
 from gpx_editor.models.route_entry import RouteEntry
 from gpx_editor.ui.poi_icons import (
-    CUE_ICON,
-    DEFAULT_CUE_ICON,
-    POI_NAME_ICON,
-    DEFAULT_POI_ICON,
     _FOLIUM_HEX,
     _GLYPH_CHAR,
+    CUE_ICON,
+    DEFAULT_CUE_ICON,
+    DEFAULT_POI_ICON,
+    POI_NAME_ICON,
 )
 
 
@@ -81,7 +82,7 @@ class ElevationWidget(FigureCanvasQTAgg):
         # Add axvline cursor for the active entry context
         if active_entry is not None:
             self._cursor = self._ax.axvline(
-                x=0, color="#E53935", linewidth=1.2, linestyle="--", visible=False, zorder=3
+                x=0, color="#E53935", linewidth=1.2, linestyle="--", visible=False, zorder=3,
             )
 
         # Plot icons for cues and POIs on the active route

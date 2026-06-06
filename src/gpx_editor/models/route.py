@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-import polars as pl
 
+import polars as pl
 
 # Canonical column schemas — used by readers and tests to ensure consistency.
 TRACK_POINTS_SCHEMA: dict[str, type] = {

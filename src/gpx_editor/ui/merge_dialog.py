@@ -19,7 +19,8 @@ from gpx_editor.models.route_entry import RouteEntry
 
 
 class MergeDialog(QDialog):
-    """Merge dialog for multi-route support.
+    """
+    Merge dialog for multi-route support.
 
     Takes a list of RouteEntry objects. The user picks a source (copy FROM)
     and a target (copy INTO). On Apply the merged route is stored and the
@@ -80,7 +81,7 @@ class MergeDialog(QDialog):
         # Buttons
         self._button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply
-            | QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Cancel,
         )
         self._apply_btn = self._button_box.button(QDialogButtonBox.StandardButton.Apply)
         self._apply_btn.setDefault(True)
@@ -103,7 +104,7 @@ class MergeDialog(QDialog):
         tgt_idx = self._target_combo.currentIndex()
         if src_idx == tgt_idx:
             self._info_label.setText(
-                "<span style='color:red;'>Source and target must be different routes.</span>"
+                "<span style='color:red;'>Source and target must be different routes.</span>",
             )
             self._apply_btn.setEnabled(False)
         else:
