@@ -10,7 +10,7 @@ import polars as pl
 
 from gpx_editor.io._course_point_types import (
     garmin_to_fit_int,
-    symbol_to_garmin,
+    garmin_type_for_poi,
 )
 from gpx_editor.models.route import RouteData
 
@@ -256,7 +256,7 @@ def _build_records(route: RouteData) -> bytes:
             else:
                 cp_ts = start_ts
 
-            raw_type = row.get("cue_type") if is_cue_df else symbol_to_garmin(row.get("symbol") or "")
+            raw_type = row.get("cue_type") if is_cue_df else garmin_type_for_poi(row.get("symbol") or "", row.get("name") or "")
             cp_type = garmin_to_fit_int(raw_type or "Generic")
             cp_name = str(row.get("name") or "")
 

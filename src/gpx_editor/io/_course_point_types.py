@@ -117,32 +117,188 @@ def is_nav_type(type_str: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _SYMBOL_TO_GARMIN: dict[str, str] = {
-    "water": "Water",
+    # Water
+    "water":          "Water",
+    "drinking water": "Water",
     "drinking_water": "Water",
-    "fuel": "Food",
-    "restaurant": "Food",
-    "cafe": "Food",
-    "food": "Food",
-    "shopping": "Food",
-    "supermarket": "Food",
-    "convenience": "Food",
-    "pharmacy": "First Aid",
-    "first_aid": "First Aid",
-    "camping": "Generic",
-    "camp_site": "Generic",
-    "lodging": "Generic",
-    "parking": "Generic",
-    "summit": "Summit",
-    "valley": "Valley",
-    "danger": "Danger",
-    "sprint": "Sprint",
-    "generic": "Generic",
+    "water tap":      "Water",
+    "water fountain": "Water",
+    "fountain":       "Water",
+    "tap":            "Water",
+    "spring":         "Water",
+    "tint":           "Water",   # app glyphicon name
+    # Food / drink
+    "food":           "Food",
+    "restaurant":     "Food",
+    "cafe":           "Food",
+    "coffee":         "Food",
+    "cutlery":        "Food",    # app glyphicon name
+    "bar":            "Food",
+    "pub":            "Food",
+    "bakery":         "Food",
+    "snack":          "Food",
+    "fast food":      "Food",
+    "fast_food":      "Food",
+    "supermarket":    "Food",
+    "convenience":    "Food",
+    "shopping":       "Food",
+    "shop":           "Food",
+    "market":         "Food",
+    "grocery":        "Food",
+    "fuel":           "Food",    # fuel stations often sell food/drinks
+    # First aid / medical
+    "pharmacy":       "First Aid",
+    "first_aid":      "First Aid",
+    "first aid":      "First Aid",
+    "hospital":       "First Aid",
+    "medical":        "First Aid",
+    "health":         "First Aid",
+    "doctor":         "First Aid",
+    "clinic":         "First Aid",
+    "plus-sign":      "First Aid",  # app glyphicon name
+    # Summit
+    "summit":              "Summit",
+    "peak":                "Summit",
+    "top":                 "Summit",
+    "col":                 "Summit",
+    "pass":                "Summit",
+    "flag":                "Summit",       # app glyphicon name
+    "chevron-up":          "Summit",       # app glyphicon name
+    # Climb categories — all common input variants
+    "4th category":        "Fourth Category",
+    "4th cat":             "Fourth Category",
+    "cat 4":               "Fourth Category",
+    "category 4":          "Fourth Category",
+    "fourth category":     "Fourth Category",
+    "fourth_category":     "Fourth Category",   # stored by garmin_to_symbol()
+    "3rd category":        "Third Category",
+    "3rd cat":             "Third Category",
+    "cat 3":               "Third Category",
+    "category 3":          "Third Category",
+    "third category":      "Third Category",
+    "third_category":      "Third Category",
+    "2nd category":        "Second Category",
+    "2nd cat":             "Second Category",
+    "cat 2":               "Second Category",
+    "category 2":          "Second Category",
+    "second category":     "Second Category",
+    "second_category":     "Second Category",
+    "1st category":        "First Category",
+    "1st cat":             "First Category",
+    "cat 1":               "First Category",
+    "category 1":          "First Category",
+    "first category":      "First Category",
+    "first_category":      "First Category",
+    "hors category":       "Hors Category",
+    "hors cat":            "Hors Category",
+    "hors catégorie":      "Hors Category",
+    "hors_category":       "Hors Category",    # stored by garmin_to_symbol()
+    "hc":                  "Hors Category",
+    "h.c.":                "Hors Category",
+    "hors":                "Hors Category",
+    # Valley
+    "valley":         "Valley",
+    "canyon":         "Valley",
+    # Danger
+    "danger":         "Danger",
+    "hazard":         "Danger",
+    "warning":        "Danger",
+    "caution":        "Danger",
+    # Sprint
+    "sprint":         "Sprint",
+    # Checkpoints (CP / TCP naming used in cycling events)
+    "checkpoint":     "Generic",
+    "cp":             "Generic",
+    "tcp":            "Generic",   # time control point
+    # Generic / accommodation / misc
+    "camping":        "Generic",
+    "camp_site":      "Generic",
+    "camp":           "Generic",
+    "tent":           "Generic",
+    "lodging":        "Generic",
+    "hotel":          "Generic",
+    "motel":          "Generic",
+    "hostel":         "Generic",
+    "parking":        "Generic",
+    "bike":           "Generic",
+    "bike repair":    "Generic",
+    "photo":          "Generic",
+    "camera":         "Generic",
+    "waypoint":       "Generic",
+    "generic":        "Generic",
+    "info-sign":      "Generic",    # app glyphicon name
+    "map-marker":     "Generic",    # app glyphicon name
+    "flash":          "Generic",    # app glyphicon name (fuel station icon)
 }
+
+# Keyword fragments for greedy fallback (checked after exact match fails).
+# Checked in order; first match wins.
+_KEYWORD_RULES: list[tuple[str, str]] = [
+    ("water",   "Water"),
+    ("drink",   "Water"),
+    ("tap",     "Water"),
+    ("spring",  "Water"),
+    ("fountain","Water"),
+    ("food",    "Food"),
+    ("eat",     "Food"),
+    ("cafe",    "Food"),
+    ("coffee",  "Food"),
+    ("restaurant", "Food"),
+    ("bar",     "Food"),
+    ("pub",     "Food"),
+    ("shop",    "Food"),
+    ("market",  "Food"),
+    ("bakery",  "Food"),
+    ("snack",   "Food"),
+    ("aid",     "First Aid"),
+    ("hospital","First Aid"),
+    ("pharmac", "First Aid"),
+    ("medical", "First Aid"),
+    ("doctor",  "First Aid"),
+    ("clinic",  "First Aid"),
+    ("hors",    "Hors Category"),
+    ("summit",  "Summit"),
+    ("peak",    "Summit"),
+    ("valley",  "Valley"),
+    ("danger",  "Danger"),
+    ("hazard",  "Danger"),
+    ("sprint",     "Sprint"),
+    ("checkpoint", "Generic"),
+]
 
 
 def symbol_to_garmin(symbol: str) -> str:
-    """Map a POI symbol to the most appropriate Garmin course point type."""
-    return _SYMBOL_TO_GARMIN.get((symbol or "").strip().lower(), "Generic")
+    """Map a POI symbol to the most appropriate Garmin course point type.
+
+    Tries exact dict lookup, keyword scan, then CP*/TCP* prefix detection.
+    """
+    s = (symbol or "").strip().lower()
+    if not s:
+        return "Generic"
+    result = _SYMBOL_TO_GARMIN.get(s)
+    if result:
+        return result
+    for keyword, garmin_type in _KEYWORD_RULES:
+        if keyword in s:
+            return garmin_type
+    # CP1, CP 3, TCP2 … — strip spaces/dashes for prefix check
+    flat = s.replace(" ", "").replace("-", "")
+    if flat.startswith("tcp") or (flat.startswith("cp") and not flat.startswith("cpap")):
+        return "Generic"
+    return "Generic"
+
+
+def garmin_type_for_poi(symbol: str, name: str = "") -> str:
+    """Return the Garmin course point type for a POI.
+
+    Checks *symbol* first; if that resolves to Generic, checks *name* as a
+    fallback so that POIs with an empty symbol but a descriptive name (e.g.
+    "Water Tap", "CP3") still get the right type.
+    """
+    result = symbol_to_garmin(symbol)
+    if result == "Generic" and name:
+        result = symbol_to_garmin(name)
+    return result
 
 
 # ---------------------------------------------------------------------------

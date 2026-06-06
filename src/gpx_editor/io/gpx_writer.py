@@ -7,7 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
-from gpx_editor.io._course_point_types import symbol_to_garmin, to_garmin
+from gpx_editor.io._course_point_types import garmin_type_for_poi, symbol_to_garmin, to_garmin
 from gpx_editor.models.route import RouteData
 
 _GPX_NS = "http://www.topografix.com/GPX/1/1"
@@ -83,7 +83,7 @@ def _write_waypoints(
             _sub(wpt, f"{{{_GPX_NS}}}desc", row["description"])
         if row["symbol"]:
             _sub(wpt, f"{{{_GPX_NS}}}sym", row["symbol"])
-        _sub(wpt, f"{{{_GPX_NS}}}type", symbol_to_garmin(row["symbol"] or ""))
+        _sub(wpt, f"{{{_GPX_NS}}}type", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
 
 
 def _write_pois_only(root: ET.Element, pois: pl.DataFrame) -> None:
@@ -96,7 +96,7 @@ def _write_pois_only(root: ET.Element, pois: pl.DataFrame) -> None:
             _sub(wpt, f"{{{_GPX_NS}}}desc", row["description"])
         if row["symbol"]:
             _sub(wpt, f"{{{_GPX_NS}}}sym", row["symbol"])
-        _sub(wpt, f"{{{_GPX_NS}}}type", symbol_to_garmin(row["symbol"] or ""))
+        _sub(wpt, f"{{{_GPX_NS}}}type", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
 
 
 def _write_route_with_cues(

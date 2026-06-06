@@ -7,7 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
-from gpx_editor.io._course_point_types import symbol_to_garmin, to_garmin
+from gpx_editor.io._course_point_types import garmin_type_for_poi, to_garmin
 from gpx_editor.models.route import RouteData
 
 _NS = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
@@ -73,7 +73,7 @@ def _write_course_points(
         pos = _sub(cp, "Position")
         _sub(pos, "LatitudeDegrees", str(row["lat"]))
         _sub(pos, "LongitudeDegrees", str(row["lon"]))
-        _sub(cp, "PointType", symbol_to_garmin(row["symbol"] or ""))
+        _sub(cp, "PointType", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
         if row["description"]:
             _sub(cp, "Notes", row["description"])
 
