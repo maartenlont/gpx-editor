@@ -28,9 +28,12 @@ def _reorder(df: pl.DataFrame, order: list[str]) -> pl.DataFrame:
 class RightPanel(QTabWidget):
     # Emits (row, lat, lon) whenever any table row is clicked
     row_selected = Signal(int, float, float)
+    # Emits when the user changes a filter on the cue or POI table
+    filter_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._last_route: RouteData | None = None
 
         # Tab 0: Routes list
         self.route_list = RouteListWidget()
@@ -55,6 +58,13 @@ class RightPanel(QTabWidget):
         for tbl in (self.track_table, self.cue_table, self.poi_table):
             tbl.row_selected.connect(self.row_selected)
 
+        self.cue_table.filter_changed.connect(self._on_filter_changed)
+        self.poi_table.filter_changed.connect(self._on_filter_changed)
+
+    def _on_filter_changed(self) -> None:
+        self._update_tab_texts()
+        self.filter_changed.emit()
+
     def set_routes(self, entries: list[RouteEntry], active_index: int) -> None:
         """Delegate to the route list widget."""
         self.route_list.set_routes(entries, active_index)
@@ -70,17 +80,14 @@ class RightPanel(QTabWidget):
         self.poi_table.select_row_by_index_val(index_val)
 
     def select_nearest_distance(self, distance_m: float) -> None:
-        """
-        Select the nearest row in whichever data tab is currently visible.
-
-        Tab index 0 is the Routes tab; data tabs are at indices 1, 2, 3.
-        """
+        """Select the nearest row in whichever data tab is currently visible."""
         tables = [self.track_table, self.cue_table, self.poi_table]
         idx = self.currentIndex() - 1  # offset by 1 for the Routes tab
         if 0 <= idx < len(tables):
             tables[idx].select_nearest_distance(distance_m)
 
     def load_route(self, route: RouteData) -> None:
+        self._last_route = route
         self.track_table.load(_reorder(
             route.track_points.sort("distance"),
             ["distance", "lat", "lon", "elevation", "time", "hr", "cadence", "power"],
@@ -93,6 +100,26 @@ class RightPanel(QTabWidget):
             route.pois.sort("distance"),
             ["distance", "symbol", "name", "description", "lat", "lon"],
         ))
-        self.setTabText(1, f"Track Points ({len(route.track_points)})")
-        self.setTabText(2, f"Cues ({len(route.cues)})")
-        self.setTabText(3, f"POIs ({len(route.pois)})")
+        self._update_tab_texts()
+
+    def _update_tab_texts(self) -> None:
+        """Update tab labels; append filter hint when a filter is active."""
+        route = self._last_route
+        n_tp    = len(route.track_points) if route is not None else 0
+        n_cues  = len(route.cues)         if route is not None else 0
+        n_pois  = len(route.pois)         if route is not None else 0
+
+        n_cues_vis = len(self.cue_table.visible_df)
+        n_pois_vis = len(self.poi_table.visible_df)
+
+        self.setTabText(1, f"Track Points ({n_tp})")
+
+        if n_cues_vis < n_cues:
+            self.setTabText(2, f"Cues ({n_cues_vis}/{n_cues} ▼)")
+        else:
+            self.setTabText(2, f"Cues ({n_cues})")
+
+        if n_pois_vis < n_pois:
+            self.setTabText(3, f"POIs ({n_pois_vis}/{n_pois} ▼)")
+        else:
+            self.setTabText(3, f"POIs ({n_pois})")

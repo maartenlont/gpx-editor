@@ -19,7 +19,16 @@ def _format(col: str, value: object) -> str:
         return f"{float(value):.6f}"
     if col == "elevation":
         return f"{float(value):.1f} m"
+    if col == "symbol":
+        return str(value).replace("_", " ").title()
     return str(value)
+
+
+# Columns whose filter comparison should be case-insensitive
+_CASE_INSENSITIVE_COLS: frozenset[str] = frozenset({"symbol", "name"})
+
+# Sentinel stored in _filter_val when the user selected "None" (hide all rows)
+_HIDE_ALL = "\x00"
 
 
 class DataFrameModel(QAbstractTableModel):
@@ -37,6 +46,7 @@ class DataFrameModel(QAbstractTableModel):
         self._cols = [c for c in df.columns if c not in self._hidden]
         self._icon_col = icon_col
         self._icon_fn = icon_fn
+        self._filter_active_col: str | None = None
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return len(self._df)
@@ -61,8 +71,16 @@ class DataFrameModel(QAbstractTableModel):
         self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole,
     ) -> str | None:
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-            return self._cols[section]
+            col = self._cols[section]
+            if col == self._filter_active_col:
+                return f"{col} ▼"
+            return col
         return None
+
+    def set_filter_col(self, col: str | None) -> None:
+        self._filter_active_col = col
+        if self._cols:
+            self.headerDataChanged.emit(Qt.Horizontal, 0, len(self._cols) - 1)
 
     def load(self, df: pl.DataFrame) -> None:
         self.beginResetModel()
@@ -88,6 +106,7 @@ class DataFrameTableWidget(QWidget):
     # index_val is the value of the hidden 'index' column (stable row identity)
     row_deleted = Signal(int)
     row_updated = Signal(int, object)  # (index_val, dict of new values)
+    filter_changed = Signal()  # emitted when user changes or clears the column filter
 
     def __init__(
         self,
@@ -100,8 +119,12 @@ class DataFrameTableWidget(QWidget):
         super().__init__(parent)
         self._icon_col = icon_col
         self._editable_cols = editable_cols
+        self._full_df: pl.DataFrame = df if df is not None else pl.DataFrame()
+        self._filter_col: str | None = None
+        self._filter_val: str | None = None
+
         self._model = DataFrameModel(
-            df if df is not None else pl.DataFrame(),
+            self._full_df,
             icon_col=icon_col,
             icon_fn=icon_fn,
         )
@@ -110,8 +133,14 @@ class DataFrameTableWidget(QWidget):
         self._view.setSelectionBehavior(QTableView.SelectRows)
         self._view.setSelectionMode(QTableView.SingleSelection)
         self._view.setAlternatingRowColors(True)
-        self._view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self._view.horizontalHeader().setStretchLastSection(True)
+
+        hdr = self._view.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
+        hdr.setStretchLastSection(True)
+        hdr.setSectionsClickable(True)
+        hdr.setCursor(Qt.PointingHandCursor)
+        hdr.sectionClicked.connect(self._on_header_clicked)
+
         self._view.verticalHeader().setVisible(False)
 
         layout = QVBoxLayout(self)
@@ -123,23 +152,26 @@ class DataFrameTableWidget(QWidget):
         self._view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._on_context_menu)
 
-    def _fix_icon_col_width(self) -> None:
-        if self._icon_col and self._icon_col in self._model._cols:
-            idx = self._model._cols.index(self._icon_col)
-            hdr = self._view.horizontalHeader()
-            hdr.setSectionResizeMode(idx, QHeaderView.Fixed)
-            self._view.setColumnWidth(idx, _ICON_COL_WIDTH)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @property
+    def visible_df(self) -> pl.DataFrame:
+        """The currently displayed (possibly filtered) DataFrame."""
+        return self._model._df
+
+    @property
+    def full_df(self) -> pl.DataFrame:
+        """The complete unfiltered DataFrame (used for saving)."""
+        return self._full_df
 
     def load(self, df: pl.DataFrame) -> None:
-        self._model.load(df)
-        self._fix_icon_col_width()
+        self._full_df = df
+        self._apply_filter()
 
     def select_row_by_index_val(self, index_val: int) -> None:
-        """
-        Select and scroll to the row whose 'index' column equals *index_val*.
-
-        Signals are blocked so the selection doesn't trigger map zoom.
-        """
+        """Select and scroll to the row whose 'index' column equals *index_val*."""
         df = self._model._df
         if "index" not in df.columns or len(df) == 0:
             return
@@ -153,12 +185,7 @@ class DataFrameTableWidget(QWidget):
         self._view.scrollTo(self._model.index(row, 0))
 
     def select_nearest_distance(self, distance_m: float) -> None:
-        """
-        Select and scroll to the row whose distance is closest to *distance_m*.
-
-        Signals are blocked during the programmatic selection to avoid a
-        feedback loop back into the elevation widget / map.
-        """
+        """Select and scroll to the row whose distance is closest to *distance_m*."""
         df = self._model._df
         if "distance" not in df.columns or len(df) == 0:
             return
@@ -167,6 +194,124 @@ class DataFrameTableWidget(QWidget):
         self._view.selectRow(idx)
         self._view.selectionModel().blockSignals(False)
         self._view.scrollTo(self._model.index(idx, 0))
+
+    # ------------------------------------------------------------------
+    # Filter
+    # ------------------------------------------------------------------
+
+    def _on_header_clicked(self, logical_index: int) -> None:
+        if logical_index >= len(self._model._cols):
+            return
+        col = self._model._cols[logical_index]
+        if col not in self._full_df.columns:
+            return
+
+        # Build unique menu items: formatted display string → raw stored value.
+        # Using _format() keeps the menu consistent with what the table shows.
+        raw_vals = self._full_df[col].drop_nulls().to_list()
+        seen: dict[str, str] = {}  # display → raw (first occurrence wins)
+        for v in raw_vals:
+            raw = str(v)
+            if not raw.strip():
+                continue
+            display = _format(col, v)
+            if display not in seen:
+                seen[display] = raw
+        items = sorted(seen.items())  # sorted by display label
+
+        menu = QMenu(self._view)
+        show_all = menu.addAction("Show all")
+        show_all.setCheckable(True)
+        show_all.setChecked(self._filter_col != col)
+
+        hide_all = menu.addAction("None")
+        hide_all.setCheckable(True)
+        hide_all.setChecked(self._filter_col == col and self._filter_val == _HIDE_ALL)
+
+        menu.addSeparator()
+
+        val_acts: dict = {}
+        for display, raw in items:
+            act = menu.addAction(display)
+            act.setCheckable(True)
+            act.setChecked(
+                self._filter_col == col
+                and self._filter_val is not None
+                and self._filter_val != _HIDE_ALL
+                and self._filter_val.lower() == raw.lower()
+            )
+            val_acts[act] = raw
+
+        action = menu.exec(QCursor.pos())
+        if action is None:
+            return
+
+        if action is show_all:
+            if self._filter_col is not None:
+                self._filter_col = None
+                self._filter_val = None
+                self._apply_filter()
+                self.filter_changed.emit()
+        elif action is hide_all:
+            already_hidden = self._filter_col == col and self._filter_val == _HIDE_ALL
+            if already_hidden:
+                self._filter_col = None
+                self._filter_val = None
+            else:
+                self._filter_col = col
+                self._filter_val = _HIDE_ALL
+            self._apply_filter()
+            self.filter_changed.emit()
+        elif action in val_acts:
+            chosen_raw = val_acts[action]
+            already_active = (
+                self._filter_col == col
+                and self._filter_val is not None
+                and self._filter_val != _HIDE_ALL
+                and self._filter_val.lower() == chosen_raw.lower()
+            )
+            if already_active:
+                self._filter_col = None
+                self._filter_val = None
+            else:
+                self._filter_col = col
+                self._filter_val = chosen_raw
+            self._apply_filter()
+            self.filter_changed.emit()
+
+    def _apply_filter(self) -> None:
+        if self._filter_col is None:
+            display_df = self._full_df
+        elif self._filter_val == _HIDE_ALL:
+            display_df = self._full_df.clear()
+        else:
+            col = self._filter_col
+            val = self._filter_val or ""
+            if col in self._full_df.columns:
+                if col in _CASE_INSENSITIVE_COLS:
+                    display_df = self._full_df.filter(
+                        pl.col(col).cast(pl.String).str.to_lowercase() == val.lower(),
+                    )
+                else:
+                    display_df = self._full_df.filter(
+                        pl.col(col).cast(pl.String) == val,
+                    )
+            else:
+                display_df = self._full_df
+        self._model.load(display_df)
+        self._model.set_filter_col(self._filter_col)
+        self._fix_icon_col_width()
+
+    def _fix_icon_col_width(self) -> None:
+        if self._icon_col and self._icon_col in self._model._cols:
+            idx = self._model._cols.index(self._icon_col)
+            hdr = self._view.horizontalHeader()
+            hdr.setSectionResizeMode(idx, QHeaderView.Fixed)
+            self._view.setColumnWidth(idx, _ICON_COL_WIDTH)
+
+    # ------------------------------------------------------------------
+    # Context menu (right-click on row)
+    # ------------------------------------------------------------------
 
     def _on_context_menu(self, pos) -> None:
         idx = self._view.indexAt(pos)

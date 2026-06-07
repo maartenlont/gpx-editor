@@ -90,6 +90,10 @@ class MainWindow(QMainWindow):
         self.right_panel.route_list.route_removed.connect(self._on_route_removed)
         self.right_panel.route_list.route_renamed.connect(self._on_route_renamed)
 
+        # Wire filter signals — refresh map/elevation with the visible (filtered) subset
+        self.right_panel.cue_table.filter_changed.connect(self._on_filter_changed)
+        self.right_panel.poi_table.filter_changed.connect(self._on_filter_changed)
+
         # Wire cue/POI edit signals
         rp = self.right_panel
         rp.cue_table.row_deleted.connect(lambda idx: self._delete_waypoint("cues", idx))
@@ -685,20 +689,58 @@ class MainWindow(QMainWindow):
                 self.elevation_widget.move_cursor(float(tp["distance"][idx]))
 
     # ------------------------------------------------------------------
+    # Filter slots
+    # ------------------------------------------------------------------
+
+    def _on_filter_changed(self) -> None:
+        """Refresh map and elevation to show only the currently visible (filtered) items."""
+        self._refresh_map_and_elevation()
+
+    # ------------------------------------------------------------------
     # View refresh
     # ------------------------------------------------------------------
 
     def _refresh_view(self) -> None:
         """Reload all widgets from the current routes list."""
-        self.map_widget.load_routes(self._routes, self._active_index)
-        self.elevation_widget.load_routes(self._routes, self._active_index)
         self.right_panel.set_routes(self._routes, self._active_index)
 
         if 0 <= self._active_index < len(self._routes):
             self.right_panel.load_route(self._routes[self._active_index].route)
 
+        # Load map and elevation using the filtered view from the tables.
+        self._refresh_map_and_elevation()
         self._update_status()
         self._update_title()
+
+    def _refresh_map_and_elevation(self) -> None:
+        """Reload map and elevation using the currently visible (possibly filtered) data."""
+        if not self._routes:
+            self.map_widget.load_routes([], -1)
+            self.elevation_widget.load_routes([], -1)
+            return
+
+        # For the active route, substitute the filtered cues/pois from the table widgets
+        # so that only visible items appear on the map and elevation plot.
+        # All other routes are shown in full (they have no filter).
+        display_routes = list(self._routes)
+        if 0 <= self._active_index < len(self._routes):
+            e = self._routes[self._active_index]
+            r = e.route
+            display_route = RouteData(
+                track_points=r.track_points,
+                cues=self.right_panel.cue_table.visible_df,
+                pois=self.right_panel.poi_table.visible_df,
+                source_file=r.source_file,
+            )
+            display_routes[self._active_index] = RouteEntry(
+                route=display_route,
+                color=e.color,
+                label=e.label,
+                visible=e.visible,
+            )
+
+        self.map_widget.load_routes(display_routes, self._active_index)
+        self.elevation_widget.load_routes(display_routes, self._active_index)
 
     # ------------------------------------------------------------------
     # Internal state helpers

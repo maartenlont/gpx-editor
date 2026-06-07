@@ -7,7 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
-from gpx_editor.io._course_point_types import garmin_type_for_poi, to_garmin
+from gpx_editor.io._course_point_types import garmin_type_for_name, garmin_type_for_poi, to_garmin
 from gpx_editor.models.route import RouteData
 
 _NS = "http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2"
@@ -63,7 +63,9 @@ def _write_course_points(
         pos = _sub(cp, "Position")
         _sub(pos, "LatitudeDegrees", str(row["lat"]))
         _sub(pos, "LongitudeDegrees", str(row["lon"]))
-        _sub(cp, "PointType", to_garmin(row["cue_type"] or "", "Left"))
+        # Use name-based mapping first, fallback to cue_type mapping
+        point_type = garmin_type_for_name(row["name"] or "", to_garmin(row["cue_type"] or "", "Left"))
+        _sub(cp, "PointType", point_type)
         if row["description"]:
             _sub(cp, "Notes", row["description"])
 
@@ -73,7 +75,9 @@ def _write_course_points(
         pos = _sub(cp, "Position")
         _sub(pos, "LatitudeDegrees", str(row["lat"]))
         _sub(pos, "LongitudeDegrees", str(row["lon"]))
-        _sub(cp, "PointType", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
+        # Use name-based mapping first, fallback to symbol-based mapping
+        point_type = garmin_type_for_name(row["name"] or "", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
+        _sub(cp, "PointType", point_type)
         if row["description"]:
             _sub(cp, "Notes", row["description"])
 

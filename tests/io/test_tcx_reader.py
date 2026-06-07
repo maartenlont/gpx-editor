@@ -79,9 +79,9 @@ class TestPOIs:
         route = read_tcx_string(SAMPLE_TCX)
         assert route.pois["name"][0] == "Water fountain"
 
-    def test_poi_symbol_is_generic(self):
+    def test_poi_symbol_is_empty_for_generic(self):
         route = read_tcx_string(SAMPLE_TCX)
-        assert route.pois["symbol"][0] == "Generic"
+        assert route.pois["symbol"][0] == ""
 
     def test_no_pois_when_no_course_points(self):
         route = read_tcx_string(SAMPLE_TCX_NO_COURSE_POINTS)

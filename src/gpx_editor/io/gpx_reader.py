@@ -114,7 +114,7 @@ def read_gpx(path: str | Path) -> RouteData:
         cues=cues,
         pois=pois,
         source_file=str(path),
-    )
+    ).deduplicate().fix_symbols()
 
 
 def read_gpx_string(xml: str) -> RouteData:

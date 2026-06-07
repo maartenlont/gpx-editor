@@ -7,7 +7,7 @@ from pathlib import Path
 
 import polars as pl
 
-from gpx_editor.io._course_point_types import garmin_type_for_poi, symbol_to_garmin, to_garmin
+from gpx_editor.io._course_point_types import garmin_type_for_name, garmin_type_for_poi, symbol_to_garmin, to_garmin
 from gpx_editor.models.route import RouteData
 
 _GPX_NS = "http://www.topografix.com/GPX/1/1"
@@ -73,7 +73,9 @@ def _write_waypoints(
             _sub(wpt, f"{{{_GPX_NS}}}name", row["name"])
         if row["description"]:
             _sub(wpt, f"{{{_GPX_NS}}}desc", row["description"])
-        _sub(wpt, f"{{{_GPX_NS}}}type", to_garmin(row["cue_type"] or "", "Left"))
+        # Use name-based mapping first, fallback to cue_type mapping
+        point_type = garmin_type_for_name(row["name"] or "", to_garmin(row["cue_type"] or "", "Left"))
+        _sub(wpt, f"{{{_GPX_NS}}}type", point_type)
 
     for row in pois.iter_rows(named=True):
         wpt = _sub(root, f"{{{_GPX_NS}}}wpt", lat=str(row["lat"]), lon=str(row["lon"]))
@@ -83,7 +85,9 @@ def _write_waypoints(
             _sub(wpt, f"{{{_GPX_NS}}}desc", row["description"])
         if row["symbol"]:
             _sub(wpt, f"{{{_GPX_NS}}}sym", row["symbol"])
-        _sub(wpt, f"{{{_GPX_NS}}}type", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
+        # Use name-based mapping first, fallback to symbol-based mapping
+        point_type = garmin_type_for_name(row["name"] or "", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
+        _sub(wpt, f"{{{_GPX_NS}}}type", point_type)
 
 
 def _write_pois_only(root: ET.Element, pois: pl.DataFrame) -> None:
@@ -96,7 +100,9 @@ def _write_pois_only(root: ET.Element, pois: pl.DataFrame) -> None:
             _sub(wpt, f"{{{_GPX_NS}}}desc", row["description"])
         if row["symbol"]:
             _sub(wpt, f"{{{_GPX_NS}}}sym", row["symbol"])
-        _sub(wpt, f"{{{_GPX_NS}}}type", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
+        # Use name-based mapping first, fallback to symbol-based mapping
+        point_type = garmin_type_for_name(row["name"] or "", garmin_type_for_poi(row["symbol"] or "", row["name"] or ""))
+        _sub(wpt, f"{{{_GPX_NS}}}type", point_type)
 
 
 def _write_route_with_cues(

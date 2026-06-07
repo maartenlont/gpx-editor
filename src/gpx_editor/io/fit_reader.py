@@ -27,7 +27,7 @@ def read_fit(path: str | Path) -> RouteData:
         cues=cues,
         pois=pois,
         source_file=str(path),
-    )
+    ).deduplicate().fix_symbols()
 
 
 def _parse_records(fitfile: fitparse.FitFile) -> pl.DataFrame:
