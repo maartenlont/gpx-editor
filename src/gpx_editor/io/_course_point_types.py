@@ -27,14 +27,13 @@ GARMIN_NAV_TYPES: frozenset[str] = frozenset({
 #: POI types — classified as *POIs* in our data model.
 GARMIN_POI_TYPES: frozenset[str] = frozenset({
     "Generic", "Summit", "Valley", "Water", "Food", "Danger",
-    "First Aid", "Sprint",
+    "First Aid", "Sprint", "Checkpoint",
     "Fourth Category", "Third Category", "Second Category",
     "First Category", "Hors Category",
     "Segment Start", "Segment End",
 })
 
 ALL_GARMIN_TYPES: frozenset[str] = GARMIN_NAV_TYPES | GARMIN_POI_TYPES
-
 
 # ---------------------------------------------------------------------------
 # Any-input → Garmin canonical (for writers and normalisation)
@@ -84,6 +83,7 @@ _TO_GARMIN: dict[str, str] = {
     "danger": "Danger",
     "first aid": "First Aid",
     "sprint": "Sprint",
+    "checkpoint": "Checkpoint",
     "fourth category": "Fourth Category",
     "third category": "Third Category",
     "second category": "Second Category",
@@ -118,159 +118,158 @@ def is_nav_type(type_str: str) -> bool:
 
 _SYMBOL_TO_GARMIN: dict[str, str] = {
     # Water
-    "water":          "Water",
+    "water": "Water",
     "drinking water": "Water",
     "drinking_water": "Water",
-    "water tap":      "Water",
+    "water tap": "Water",
     "water fountain": "Water",
-    "fountain":       "Water",
-    "tap":            "Water",
-    "spring":         "Water",
-    "tint":           "Water",   # app glyphicon name
+    "fountain": "Water",
+    "tap": "Water",
+    "spring": "Water",
+    "tint": "Water",  # app glyphicon name
     # Food / drink
-    "food":           "Food",
-    "restaurant":     "Food",
-    "cafe":           "Food",
-    "coffee":         "Food",
-    "cutlery":        "Food",    # app glyphicon name
-    "bar":            "Food",
-    "pub":            "Food",
-    "bakery":         "Food",
-    "snack":          "Food",
-    "fast food":      "Food",
-    "fast_food":      "Food",
-    "supermarket":    "Food",
-    "convenience":    "Food",
-    "shopping":       "Food",
-    "shop":           "Food",
-    "market":         "Food",
-    "grocery":        "Food",
-    "fuel":           "Food",    # fuel stations often sell food/drinks
+    "food": "Food",
+    "restaurant": "Food",
+    "cafe": "Food",
+    "coffee": "Food",
+    "cutlery": "Food",  # app glyphicon name
+    "bar": "Food",
+    "pub": "Food",
+    "bakery": "Food",
+    "snack": "Food",
+    "fast food": "Food",
+    "fast_food": "Food",
+    "supermarket": "Food",
+    "convenience": "Food",
+    "shopping": "Food",
+    "shop": "Food",
+    "market": "Food",
+    "grocery": "Food",
+    "fuel": "Food",  # fuel stations often sell food/drinks
     # First aid / medical
-    "pharmacy":       "First Aid",
-    "first_aid":      "First Aid",
-    "first aid":      "First Aid",
-    "hospital":       "First Aid",
-    "medical":        "First Aid",
-    "health":         "First Aid",
-    "doctor":         "First Aid",
-    "clinic":         "First Aid",
-    "plus-sign":      "First Aid",  # app glyphicon name
+    "pharmacy": "First Aid",
+    "first_aid": "First Aid",
+    "first aid": "First Aid",
+    "hospital": "First Aid",
+    "medical": "First Aid",
+    "health": "First Aid",
+    "doctor": "First Aid",
+    "clinic": "First Aid",
+    "plus-sign": "First Aid",  # app glyphicon name
     # Summit
-    "summit":              "Summit",
-    "peak":                "Summit",
-    "top":                 "Summit",
-    "col":                 "Summit",
-    "pass":                "Summit",
-    "flag":                "Summit",       # app glyphicon name
-    "chevron-up":          "Summit",       # app glyphicon name
+    "summit": "Summit",
+    "peak": "Summit",
+    "top": "Summit",
+    "col": "Summit",
+    "pass": "Summit",
+    "flag": "Summit",  # app glyphicon name
+    "chevron-up": "Summit",  # app glyphicon name
     # Climb categories — all common input variants
-    "4th category":        "Fourth Category",
-    "4th cat":             "Fourth Category",
-    "cat 4":               "Fourth Category",
-    "category 4":          "Fourth Category",
-    "fourth category":     "Fourth Category",
-    "fourth_category":     "Fourth Category",   # stored by garmin_to_symbol()
-    "3rd category":        "Third Category",
-    "3rd cat":             "Third Category",
-    "cat 3":               "Third Category",
-    "category 3":          "Third Category",
-    "third category":      "Third Category",
-    "third_category":      "Third Category",
-    "2nd category":        "Second Category",
-    "2nd cat":             "Second Category",
-    "cat 2":               "Second Category",
-    "category 2":          "Second Category",
-    "second category":     "Second Category",
-    "second_category":     "Second Category",
-    "1st category":        "First Category",
-    "1st cat":             "First Category",
-    "cat 1":               "First Category",
-    "category 1":          "First Category",
-    "first category":      "First Category",
-    "first_category":      "First Category",
-    "hors category":       "Hors Category",
-    "hors cat":            "Hors Category",
-    "hors catégorie":      "Hors Category",
-    "hors_category":       "Hors Category",    # stored by garmin_to_symbol()
-    "hc":                  "Hors Category",
-    "h.c.":                "Hors Category",
-    "hors":                "Hors Category",
+    "4th category": "Fourth Category",
+    "4th cat": "Fourth Category",
+    "cat 4": "Fourth Category",
+    "category 4": "Fourth Category",
+    "fourth category": "Fourth Category",
+    "fourth_category": "Fourth Category",  # stored by garmin_to_symbol()
+    "3rd category": "Third Category",
+    "3rd cat": "Third Category",
+    "cat 3": "Third Category",
+    "category 3": "Third Category",
+    "third category": "Third Category",
+    "third_category": "Third Category",
+    "2nd category": "Second Category",
+    "2nd cat": "Second Category",
+    "cat 2": "Second Category",
+    "category 2": "Second Category",
+    "second category": "Second Category",
+    "second_category": "Second Category",
+    "1st category": "First Category",
+    "1st cat": "First Category",
+    "cat 1": "First Category",
+    "category 1": "First Category",
+    "first category": "First Category",
+    "first_category": "First Category",
+    "hors category": "Hors Category",
+    "hors cat": "Hors Category",
+    "hors catégorie": "Hors Category",
+    "hors_category": "Hors Category",  # stored by garmin_to_symbol()
+    "hc": "Hors Category",
+    "h.c.": "Hors Category",
+    "hors": "Hors Category",
     # Valley
-    "valley":         "Valley",
-    "canyon":         "Valley",
+    "valley": "Valley",
+    "canyon": "Valley",
     # Danger
-    "danger":         "Danger",
-    "hazard":         "Danger",
-    "warning":        "Danger",
-    "caution":        "Danger",
+    "danger": "Danger",
+    "hazard": "Danger",
+    "warning": "Danger",
+    "caution": "Danger",
     # Sprint
-    "sprint":         "Sprint",
+    "sprint": "Sprint",
     # Checkpoints (CP / TCP naming used in cycling events)
-    "checkpoint":     "Generic",
-    "cp":             "Generic",
-    "tcp":            "Generic",   # time control point
+    "checkpoint": "Checkpoint",
+    # cp and tcp are handled by pattern matching in garmin_type_for_name
     # Generic / accommodation / misc
-    "camping":        "Generic",
-    "camp_site":      "Generic",
-    "camp":           "Generic",
-    "tent":           "Generic",
-    "lodging":        "Generic",
-    "hotel":          "Generic",
-    "motel":          "Generic",
-    "hostel":         "Generic",
-    "parking":        "Generic",
-    "bike":           "Generic",
-    "bike repair":    "Generic",
-    "photo":          "Generic",
-    "camera":         "Generic",
-    "waypoint":       "Generic",
-    "generic":        "Generic",
-    "info-sign":      "Generic",    # app glyphicon name
-    "map-marker":     "Generic",    # app glyphicon name
-    "flash":          "Generic",    # app glyphicon name (fuel station icon)
+    "camping": "Generic",
+    "camp_site": "Generic",
+    "camp": "Generic",
+    "tent": "Generic",
+    "lodging": "Generic",
+    "hotel": "Generic",
+    "motel": "Generic",
+    "hostel": "Generic",
+    "parking": "Generic",
+    "bike": "Generic",
+    "bike repair": "Generic",
+    "photo": "Generic",
+    "camera": "Generic",
+    "waypoint": "Generic",
+    "generic": "Generic",
+    "info-sign": "Generic",  # app glyphicon name
+    "map-marker": "Generic",  # app glyphicon name
+    "flash": "Generic",  # app glyphicon name (fuel station icon)
 }
 
 # Keyword fragments for greedy fallback (checked after exact match fails).
 # Checked in order; first match wins.
 _KEYWORD_RULES: list[tuple[str, str]] = [
-    ("water",   "Water"),
-    ("drink",   "Water"),
-    ("tap",     "Water"),
-    ("spring",  "Water"),
-    ("fountain","Water"),
-    ("food",    "Food"),
-    ("eat",     "Food"),
-    ("cafe",    "Food"),
-    ("coffee",  "Food"),
+    ("water", "Water"),
+    ("drink", "Water"),
+    ("tap", "Water"),
+    ("spring", "Water"),
+    ("fountain", "Water"),
+    ("food", "Food"),
+    ("eat", "Food"),
+    ("cafe", "Food"),
+    ("coffee", "Food"),
     ("restaurant", "Food"),
-    ("bar",     "Food"),
-    ("pub",     "Food"),
-    ("shop",    "Food"),
-    ("market",  "Food"),
-    ("bakery",  "Food"),
-    ("snack",   "Food"),
-    ("aid",     "First Aid"),
-    ("hospital","First Aid"),
+    ("bar", "Food"),
+    ("pub", "Food"),
+    ("shop", "Food"),
+    ("market", "Food"),
+    ("bakery", "Food"),
+    ("snack", "Food"),
+    ("aid", "First Aid"),
+    ("hospital", "First Aid"),
     ("pharmac", "First Aid"),
     ("medical", "First Aid"),
-    ("doctor",  "First Aid"),
-    ("clinic",  "First Aid"),
-    ("hors",    "Hors Category"),
-    ("summit",  "Summit"),
-    ("peak",    "Summit"),
-    ("valley",  "Valley"),
-    ("danger",  "Danger"),
-    ("hazard",  "Danger"),
-    ("sprint",     "Sprint"),
-    ("checkpoint", "Generic"),
+    ("doctor", "First Aid"),
+    ("clinic", "First Aid"),
+    ("hors", "Hors Category"),
+    ("summit", "Summit"),
+    ("peak", "Summit"),
+    ("valley", "Valley"),
+    ("danger", "Danger"),
+    ("hazard", "Danger"),
+    ("sprint", "Sprint"),
+    ("checkpoint", "Checkpoint"),
 ]
 
 
 def symbol_to_garmin(symbol: str) -> str:
     """Map a POI symbol to the most appropriate Garmin course point type.
 
-    Tries exact dict lookup, keyword scan, then CP*/TCP* prefix detection.
+    Tries exact dict lookup, then keyword scan. Returns "Generic" if no match.
     """
     s = (symbol or "").strip().lower()
     if not s:
@@ -281,10 +280,6 @@ def symbol_to_garmin(symbol: str) -> str:
     for keyword, garmin_type in _KEYWORD_RULES:
         if keyword in s:
             return garmin_type
-    # CP1, CP 3, TCP2 … — strip spaces/dashes for prefix check
-    flat = s.replace(" ", "").replace("-", "")
-    if flat.startswith("tcp") or (flat.startswith("cp") and not flat.startswith("cpap")):
-        return "Generic"
     return "Generic"
 
 
@@ -301,6 +296,57 @@ def garmin_type_for_poi(symbol: str, name: str = "") -> str:
     return result
 
 
+def garmin_type_for_name(name: str, fallback: str = "Generic") -> str:
+    """Return the Garmin course point type based on course point name.
+    
+    Maps names containing turn direction keywords to appropriate PointType:
+    - "Sharp Left", "Slight Left", "Left", "Turn Left" → "Left"
+    - "Sharp Right", "Slight Right", "Right", "Turn Right" → "Right"
+    - "Straight", "Continue" → "Straight"
+    
+    Falls back to keyword matching for POI types, then to *fallback*.
+    """
+    if not name:
+        return fallback
+
+    name_lower = name.lower().strip()
+
+    # Direct turn direction mappings
+    turn_mappings = {
+        "sharp left": "Left",
+        "slight left": "Left",
+        "left": "Left",
+        "turn left": "Left",
+        "sharp right": "Right",
+        "slight right": "Right",
+        "right": "Right",
+        "turn right": "Right",
+        "straight": "Straight",
+        "continue": "Straight",
+    }
+
+    # Check for exact turn direction phrases first
+    for phrase, point_type in turn_mappings.items():
+        if name_lower == phrase:
+            return point_type
+
+    # Check if name starts with turn direction
+    for phrase, point_type in turn_mappings.items():
+        if name_lower.startswith(phrase):
+            return point_type
+
+    # Check for CP/TCP patterns (e.g., "CP", "CP 1", "CP1", "TCP", "TCP 5")
+    flat = name_lower.replace(" ", "")
+    if flat == "cp" or (flat.startswith("cp") and len(flat) > 2 and flat[2:].isdigit()):
+        return "Checkpoint"
+    if flat == "tcp" or (flat.startswith("tcp") and len(flat) > 3 and flat[3:].isdigit()):
+        return "Checkpoint"
+
+    # Check for POI keywords as fallback
+    result = symbol_to_garmin(name)
+    return result if result != "Generic" else fallback
+
+
 # ---------------------------------------------------------------------------
 # Garmin type → POI symbol (for readers)
 # ---------------------------------------------------------------------------
@@ -314,6 +360,7 @@ _GARMIN_TO_SYMBOL: dict[str, str] = {
     "danger": "danger",
     "first aid": "first_aid",
     "sprint": "sprint",
+    "checkpoint": "checkpoint",
     "fourth category": "fourth_category",
     "third category": "third_category",
     "second category": "second_category",
@@ -324,7 +371,22 @@ _GARMIN_TO_SYMBOL: dict[str, str] = {
 
 def garmin_to_symbol(type_str: str) -> str:
     """Map a Garmin POI type string to a POI symbol. Returns '' for Generic."""
-    return _GARMIN_TO_SYMBOL.get((type_str or "").strip().lower(), "")
+    normalized = (type_str or "").strip().lower()
+    
+    # Check for exact match first
+    symbol = _GARMIN_TO_SYMBOL.get(normalized)
+    if symbol is not None:
+        return symbol
+    
+    # Check for CP N pattern (where N is an integer)
+    if normalized.startswith("cp ") and normalized[3:].isdigit():
+        return "checkpoint"
+    
+    # Check for TCP N pattern (where N is an integer)
+    if normalized.startswith("tcp ") and normalized[4:].isdigit():
+        return "checkpoint"
+    
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +420,7 @@ _GARMIN_TO_FIT: dict[str, int] = {
     "U Turn": 23,
     "Segment Start": 24,
     "Segment End": 25,
+    "Checkpoint": 26,
 }
 
 _FIT_TO_GARMIN: dict[int, str] = {v: k for k, v in _GARMIN_TO_FIT.items()}
