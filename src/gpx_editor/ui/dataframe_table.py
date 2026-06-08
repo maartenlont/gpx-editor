@@ -73,6 +73,23 @@ class DataFrameModel(QAbstractTableModel):
                 self.index(0, 0), self.index(len(self._df) - 1, 0), [Qt.CheckStateRole],
             )
 
+    def select_all(self) -> None:
+        if "index" not in self._df.columns or len(self._df) == 0:
+            return
+        self._checked_index_vals.update(int(v) for v in self._df["index"].to_list())
+        self.dataChanged.emit(
+            self.index(0, 0), self.index(len(self._df) - 1, 0), [Qt.CheckStateRole],
+        )
+
+    def invert_selection(self) -> None:
+        if "index" not in self._df.columns or len(self._df) == 0:
+            return
+        visible = {int(v) for v in self._df["index"].to_list()}
+        self._checked_index_vals = visible - self._checked_index_vals
+        self.dataChanged.emit(
+            self.index(0, 0), self.index(len(self._df) - 1, 0), [Qt.CheckStateRole],
+        )
+
     # ------------------------------------------------------------------
     # QAbstractTableModel overrides
     # ------------------------------------------------------------------
@@ -322,7 +339,21 @@ class DataFrameTableWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _on_header_clicked(self, logical_index: int) -> None:
-        # Skip the checkbox column
+        # Checkbox column header: show select / deselect / invert menu
+        if self._model._show_checkboxes and logical_index == 0:
+            menu = QMenu(self._view)
+            select_all_act = menu.addAction("Select All")
+            deselect_all_act = menu.addAction("Deselect All")
+            invert_act = menu.addAction("Invert Selection")
+            action = menu.exec(QCursor.pos())
+            if action is select_all_act:
+                self._model.select_all()
+            elif action is deselect_all_act:
+                self._model.clear_checks()
+            elif action is invert_act:
+                self._model.invert_selection()
+            return
+
         col_idx = logical_index - self._model._col_offset()
         if col_idx < 0 or col_idx >= len(self._model._cols):
             return
