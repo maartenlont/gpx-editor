@@ -107,6 +107,15 @@ window._addOsmPoi = function(lat, lon, name, desc, symbol, wptype) {
 };
 """
 
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as h:mm:ss."""
+    s = int(max(0.0, seconds))
+    h = s // 3600
+    m = (s % 3600) // 60
+    sec = s % 60
+    return f"{h}:{m:02d}:{sec:02d}"
+
+
 # Maximum polyline points sent to Leaflet; larger tracks are downsampled.
 _MAX_POLYLINE_PTS = 5_000
 
@@ -359,17 +368,44 @@ class MapWidget(QWebEngineView):
     # ------------------------------------------------------------------
 
     def _add_markers(self, m: folium.Map, route: RouteData) -> None:
+        # Build a fast (dist_m, elapsed_s) lookup from track time data, if available.
+        tp = route.track_points
+        _time_pairs: list[tuple[float, float]] = []
+        if len(tp) > 0 and "time" in tp.columns:
+            times = tp["time"].to_list()
+            dists = tp["distance"].to_list()
+            t0 = next((t for t in times if t is not None), None)
+            if t0 is not None:
+                for d, t in zip(dists, times):
+                    if d is not None and t is not None:
+                        _time_pairs.append((d, (t - t0).total_seconds()))
+
+        def _elapsed_at(dist_m: float | None) -> str | None:
+            if not _time_pairs or dist_m is None:
+                return None
+            _, elapsed = min(_time_pairs, key=lambda p: abs(p[0] - dist_m))
+            return _format_elapsed(elapsed)
+
         for row in route.cues.iter_rows(named=True):
             key = row["cue_type"].lower() if row["cue_type"] else ""
             icon_name, color = _CUE_ICON.get(key, _DEFAULT_CUE_ICON)
             dist_km = row["distance"] / 1000.0 if row["distance"] is not None else None
+            elapsed = _elapsed_at(row["distance"])
             popup_parts = [f"<b>{row['name']}</b>", row["cue_type"] or ""]
             if dist_km is not None:
                 popup_parts.append(f"📍 {dist_km:.2f} km")
+            if elapsed:
+                popup_parts.append(f"⏱ {elapsed}")
+            tooltip = row["name"] or ""
+            if dist_km is not None:
+                tooltip += f" ({dist_km:.2f} km"
+                if elapsed:
+                    tooltip += f" · {elapsed}"
+                tooltip += ")"
             folium.Marker(
                 [row["lat"], row["lon"]],
-                popup=folium.Popup("<br>".join(p for p in popup_parts if p), max_width=200),
-                tooltip=row["name"],
+                popup=folium.Popup("<br>".join(p for p in popup_parts if p), max_width=220),
+                tooltip=tooltip,
                 icon=folium.Icon(color=color, icon=icon_name),
             ).add_to(m)
 
@@ -377,13 +413,22 @@ class MapWidget(QWebEngineView):
             name_key = (row["name"] or "").lower()
             icon_name, color = _POI_NAME_ICON.get(name_key, _DEFAULT_POI_ICON)
             dist_km = row["distance"] / 1000.0 if row["distance"] is not None else None
+            elapsed = _elapsed_at(row["distance"])
             popup_parts = [f"<b>{row['name']}</b>", row.get("description") or ""]
             if dist_km is not None:
                 popup_parts.append(f"📍 {dist_km:.2f} km")
+            if elapsed:
+                popup_parts.append(f"⏱ {elapsed}")
+            tooltip = row["name"] or ""
+            if dist_km is not None:
+                tooltip += f" ({dist_km:.2f} km"
+                if elapsed:
+                    tooltip += f" · {elapsed}"
+                tooltip += ")"
             folium.Marker(
                 [row["lat"], row["lon"]],
-                popup=folium.Popup("<br>".join(p for p in popup_parts if p), max_width=200),
-                tooltip=f"{row['name']} ({dist_km:.2f} km)" if dist_km is not None else row["name"],
+                popup=folium.Popup("<br>".join(p for p in popup_parts if p), max_width=220),
+                tooltip=tooltip,
                 icon=folium.Icon(color=color, icon=icon_name),
             ).add_to(m)
 
