@@ -30,6 +30,9 @@ _CASE_INSENSITIVE_COLS: frozenset[str] = frozenset({"symbol", "name"})
 # Sentinel stored in _filter_val when the user selected "None" (hide all rows)
 _HIDE_ALL = "\x00"
 
+_CHECKBOX_COL_WIDTH = 24
+_ICON_COL_WIDTH = 26
+
 
 class DataFrameModel(QAbstractTableModel):
     def __init__(
@@ -38,6 +41,7 @@ class DataFrameModel(QAbstractTableModel):
         hidden_cols: tuple[str, ...] = ("index",),
         icon_col: str | None = None,
         icon_fn: Callable[[dict], QIcon] | None = None,
+        show_checkboxes: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -47,17 +51,61 @@ class DataFrameModel(QAbstractTableModel):
         self._icon_col = icon_col
         self._icon_fn = icon_fn
         self._filter_active_col: str | None = None
+        self._show_checkboxes = show_checkboxes
+        self._checked_index_vals: set[int] = set()
+
+    # ------------------------------------------------------------------
+    # Checkbox helpers
+    # ------------------------------------------------------------------
+
+    def _col_offset(self) -> int:
+        return 1 if self._show_checkboxes else 0
+
+    def checked_index_vals(self) -> set[int]:
+        return set(self._checked_index_vals)
+
+    def clear_checks(self) -> None:
+        if not self._checked_index_vals:
+            return
+        self._checked_index_vals.clear()
+        if len(self._df) > 0:
+            self.dataChanged.emit(
+                self.index(0, 0), self.index(len(self._df) - 1, 0), [Qt.CheckStateRole],
+            )
+
+    # ------------------------------------------------------------------
+    # QAbstractTableModel overrides
+    # ------------------------------------------------------------------
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
         return len(self._df)
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
-        return len(self._cols)
+        return len(self._cols) + self._col_offset()
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+        if not index.isValid():
+            return Qt.NoItemFlags
+        if self._show_checkboxes and index.column() == 0:
+            return Qt.ItemIsEnabled | Qt.ItemIsUserCheckable
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
 
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid():
             return None
-        col = self._cols[index.column()]
+
+        # Checkbox column
+        if self._show_checkboxes and index.column() == 0:
+            if role == Qt.CheckStateRole and "index" in self._df.columns:
+                idx_val = int(self._df["index"][index.row()])
+                return Qt.Checked if idx_val in self._checked_index_vals else Qt.Unchecked
+            return None
+
+        col_idx = index.column() - self._col_offset()
+        if col_idx < 0 or col_idx >= len(self._cols):
+            return None
+        col = self._cols[col_idx]
+
         if role == Qt.DecorationRole and col == self._icon_col and self._icon_fn is not None:
             return self._icon_fn(self._df.row(index.row(), named=True))
         if role == Qt.DisplayRole:
@@ -67,25 +115,46 @@ class DataFrameModel(QAbstractTableModel):
             return _format(col, value)
         return None
 
+    def setData(self, index: QModelIndex, value, role: int = Qt.EditRole) -> bool:
+        if not index.isValid():
+            return False
+        if self._show_checkboxes and index.column() == 0 and role == Qt.CheckStateRole:
+            if "index" not in self._df.columns or index.row() >= len(self._df):
+                return False
+            idx_val = int(self._df["index"][index.row()])
+            if value == Qt.Checked:
+                self._checked_index_vals.add(idx_val)
+            else:
+                self._checked_index_vals.discard(idx_val)
+            self.dataChanged.emit(index, index, [Qt.CheckStateRole])
+            return True
+        return False
+
     def headerData(
         self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole,
     ) -> str | None:
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-            col = self._cols[section]
-            if col == self._filter_active_col:
-                return f"{col} ▼"
-            return col
+            if self._show_checkboxes and section == 0:
+                return ""
+            col_idx = section - self._col_offset()
+            if 0 <= col_idx < len(self._cols):
+                col = self._cols[col_idx]
+                if col == self._filter_active_col:
+                    return f"{col} ▼"
+                return col
         return None
 
     def set_filter_col(self, col: str | None) -> None:
         self._filter_active_col = col
-        if self._cols:
-            self.headerDataChanged.emit(Qt.Horizontal, 0, len(self._cols) - 1)
+        total_cols = len(self._cols) + self._col_offset()
+        if total_cols > 0:
+            self.headerDataChanged.emit(Qt.Horizontal, 0, total_cols - 1)
 
     def load(self, df: pl.DataFrame) -> None:
         self.beginResetModel()
         self._df = df
         self._cols = [c for c in df.columns if c not in self._hidden]
+        self._checked_index_vals.clear()
         self.endResetModel()
 
     def row_lat_lon(self, row: int) -> tuple[float, float] | None:
@@ -96,15 +165,12 @@ class DataFrameModel(QAbstractTableModel):
         return float(self._df["lat"][row]), float(self._df["lon"][row])
 
 
-_ICON_COL_WIDTH = 26  # pixels for an icon-only column
-
-
 class DataFrameTableWidget(QWidget):
     """QTableView backed by a DataFrameModel; emits row_selected(row, lat, lon)."""
 
     row_selected = Signal(int, float, float)
-    # index_val is the value of the hidden 'index' column (stable row identity)
-    row_deleted = Signal(int)
+    # Emits a list of stable index values to delete (one or many)
+    rows_deleted = Signal(list)
     row_updated = Signal(int, object)  # (index_val, dict of new values)
     filter_changed = Signal()  # emitted when user changes or clears the column filter
 
@@ -114,6 +180,7 @@ class DataFrameTableWidget(QWidget):
         icon_col: str | None = None,
         icon_fn: Callable[[dict], QIcon] | None = None,
         editable_cols: list[str] | None = None,
+        show_checkboxes: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -122,11 +189,13 @@ class DataFrameTableWidget(QWidget):
         self._full_df: pl.DataFrame = df if df is not None else pl.DataFrame()
         self._filter_col: str | None = None
         self._filter_val: str | None = None
+        self._pending_select_row: int | None = None
 
         self._model = DataFrameModel(
             self._full_df,
             icon_col=icon_col,
             icon_fn=icon_fn,
+            show_checkboxes=show_checkboxes,
         )
         self._view = QTableView()
         self._view.setModel(self._model)
@@ -152,6 +221,8 @@ class DataFrameTableWidget(QWidget):
         self._view.setContextMenuPolicy(Qt.CustomContextMenu)
         self._view.customContextMenuRequested.connect(self._on_context_menu)
 
+        self._fix_column_widths()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -169,6 +240,15 @@ class DataFrameTableWidget(QWidget):
     def load(self, df: pl.DataFrame) -> None:
         self._full_df = df
         self._apply_filter()
+        # Restore selection to the row that was pending (e.g. after a delete)
+        if self._pending_select_row is not None:
+            row = min(self._pending_select_row, len(self._model._df) - 1)
+            if row >= 0:
+                self._view.selectionModel().blockSignals(True)
+                self._view.selectRow(row)
+                self._view.selectionModel().blockSignals(False)
+                self._view.scrollTo(self._model.index(row, 0))
+            self._pending_select_row = None
 
     def select_row_by_index_val(self, index_val: int) -> None:
         """Select and scroll to the row whose 'index' column equals *index_val*."""
@@ -211,33 +291,46 @@ class DataFrameTableWidget(QWidget):
         self._view.scrollTo(self._model.index(next_row, 0))
 
     def delete_current_and_select_next(self) -> None:
-        """Delete the current row and select the next one.
+        """Delete checked rows (if any) or the current row, then select the next row.
 
-        Emits row_deleted with the stable index value of the deleted row.
-        After deletion, selects the row that was next (now at the same position).
+        Emits rows_deleted with the stable index values of all deleted rows.
+        After the subsequent data reload, the row at the same visual position
+        is automatically re-selected (handled in load()).
         """
         df = self._model._df
         if len(df) == 0 or "index" not in df.columns:
             return
-        current = self.current_row()
-        if current < 0:
-            return
-        index_val = int(df["index"][current])
-        self.row_deleted.emit(index_val)
+
+        checked = self._model.checked_index_vals()
+        if checked:
+            # Bulk delete: find the lowest visual row of the checked set so we
+            # can scroll back there after the table rebuilds.
+            visual_rows = [
+                i for i in range(len(df)) if int(df["index"][i]) in checked
+            ]
+            self._pending_select_row = min(visual_rows) if visual_rows else 0
+            self.rows_deleted.emit(list(checked))
+        else:
+            current = self.current_row()
+            if current < 0:
+                return
+            self._pending_select_row = current
+            self.rows_deleted.emit([int(df["index"][current])])
 
     # ------------------------------------------------------------------
     # Filter
     # ------------------------------------------------------------------
 
     def _on_header_clicked(self, logical_index: int) -> None:
-        if logical_index >= len(self._model._cols):
+        # Skip the checkbox column
+        col_idx = logical_index - self._model._col_offset()
+        if col_idx < 0 or col_idx >= len(self._model._cols):
             return
-        col = self._model._cols[logical_index]
+        col = self._model._cols[col_idx]
         if col not in self._full_df.columns:
             return
 
         # Build unique menu items: formatted display string → raw stored value.
-        # Using _format() keeps the menu consistent with what the table shows.
         raw_vals = self._full_df[col].drop_nulls().to_list()
         seen: dict[str, str] = {}  # display → raw (first occurrence wins)
         for v in raw_vals:
@@ -247,7 +340,7 @@ class DataFrameTableWidget(QWidget):
             display = _format(col, v)
             if display not in seen:
                 seen[display] = raw
-        items = sorted(seen.items())  # sorted by display label
+        items = sorted(seen.items())
 
         menu = QMenu(self._view)
         show_all = menu.addAction("Show all")
@@ -330,14 +423,17 @@ class DataFrameTableWidget(QWidget):
                 display_df = self._full_df
         self._model.load(display_df)
         self._model.set_filter_col(self._filter_col)
-        self._fix_icon_col_width()
+        self._fix_column_widths()
 
-    def _fix_icon_col_width(self) -> None:
+    def _fix_column_widths(self) -> None:
+        hdr = self._view.horizontalHeader()
+        if self._model._show_checkboxes:
+            hdr.setSectionResizeMode(0, QHeaderView.Fixed)
+            self._view.setColumnWidth(0, _CHECKBOX_COL_WIDTH)
         if self._icon_col and self._icon_col in self._model._cols:
-            idx = self._model._cols.index(self._icon_col)
-            hdr = self._view.horizontalHeader()
-            hdr.setSectionResizeMode(idx, QHeaderView.Fixed)
-            self._view.setColumnWidth(idx, _ICON_COL_WIDTH)
+            icon_idx = self._model._cols.index(self._icon_col) + self._model._col_offset()
+            hdr.setSectionResizeMode(icon_idx, QHeaderView.Fixed)
+            self._view.setColumnWidth(icon_idx, _ICON_COL_WIDTH)
 
     # ------------------------------------------------------------------
     # Context menu (right-click on row)
@@ -367,7 +463,8 @@ class DataFrameTableWidget(QWidget):
             if dlg.exec() == RowEditDialog.DialogCode.Accepted:
                 self.row_updated.emit(index_val, dlg.get_values())
         elif action == delete_act:
-            self.row_deleted.emit(index_val)
+            self._pending_select_row = row
+            self.rows_deleted.emit([index_val])
 
     def _on_row_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         if not current.isValid():

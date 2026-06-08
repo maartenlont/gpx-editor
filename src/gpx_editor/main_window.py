@@ -97,9 +97,9 @@ class MainWindow(QMainWindow):
 
         # Wire cue/POI edit signals
         rp = self.right_panel
-        rp.cue_table.row_deleted.connect(lambda idx: self._delete_waypoint("cues", idx))
+        rp.cue_table.rows_deleted.connect(lambda idxs: self._delete_waypoints("cues", idxs))
         rp.cue_table.row_updated.connect(lambda idx, vals: self._update_waypoint("cues", idx, vals))
-        rp.poi_table.row_deleted.connect(lambda idx: self._delete_waypoint("pois", idx))
+        rp.poi_table.rows_deleted.connect(lambda idxs: self._delete_waypoints("pois", idxs))
         rp.poi_table.row_updated.connect(lambda idx, vals: self._update_waypoint("pois", idx, vals))
 
     def _setup_menu(self) -> None:
@@ -478,11 +478,11 @@ class MainWindow(QMainWindow):
         )
         self._update_active_route(pois=pl.concat([existing, new_poi]))
 
-    def _delete_waypoint(self, attr: str, index_val: int) -> None:
-        if self._active_index < 0 or not self._routes:
+    def _delete_waypoints(self, attr: str, index_vals: list[int]) -> None:
+        if self._active_index < 0 or not self._routes or not index_vals:
             return
         df: pl.DataFrame = getattr(self._routes[self._active_index].route, attr)
-        new_df = df.filter(pl.col("index") != index_val)
+        new_df = df.filter(~pl.col("index").is_in(index_vals))
         self._update_active_route(**{attr: new_df})
 
     def _update_waypoint(self, attr: str, index_val: int, new_vals: dict) -> None:
