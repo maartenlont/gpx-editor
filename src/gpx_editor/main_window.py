@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self._active_index: int = -1
         self._open_path: Path | None = None
         self._dirty = False
+        self._rwgps_compat: bool = False  # remembered across Save / Save As for GPX
         self._osm_cache: dict[tuple, object] = {}  # session cache: (category, bbox) → df
         self._setup_ui()
         self._setup_menu()
@@ -116,10 +117,15 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        self._save_act = file_menu.addAction("&Save As…")
+        self._save_act = file_menu.addAction("&Save")
         self._save_act.setShortcut("Ctrl+S")
         self._save_act.setEnabled(False)
-        self._save_act.triggered.connect(self._save_as)
+        self._save_act.triggered.connect(self._save)
+
+        self._save_as_act = file_menu.addAction("Save &As…")
+        self._save_as_act.setShortcut("Ctrl+Shift+S")
+        self._save_as_act.setEnabled(False)
+        self._save_as_act.triggered.connect(self._save_as)
 
         file_menu.addSeparator()
 
@@ -135,6 +141,16 @@ class MainWindow(QMainWindow):
         self._osm_act = edit_menu.addAction("Import &OSM POIs…")
         self._osm_act.setEnabled(False)
         self._osm_act.triggered.connect(self._open_osm_dialog)
+
+        edit_menu.addSeparator()
+
+        self._dedup_act = edit_menu.addAction("Remove &Duplicates…")
+        self._dedup_act.setEnabled(False)
+        self._dedup_act.triggered.connect(self._remove_duplicates)
+
+        self._fix_symbols_act = edit_menu.addAction("Fix &Symbols")
+        self._fix_symbols_act.setEnabled(False)
+        self._fix_symbols_act.triggered.connect(self._fix_symbols)
 
     def _setup_status_bar(self) -> None:
         self._status_label = QLabel("No file loaded")
@@ -257,12 +273,18 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error loading file", str(exc))
         return None
 
+    def _save(self) -> None:
+        """Overwrite the currently open file without prompting."""
+        if not self._routes or self._active_index < 0 or self._open_path is None:
+            return
+        self._write_route(self._routes[self._active_index].route, self._open_path)
+
     def _save_as(self) -> None:
         if not self._routes or self._active_index < 0:
             return
         active_entry = self._routes[self._active_index]
         start_dir = str(self._open_path.parent) if self._open_path else ""
-        path, selected_filter = QFileDialog.getSaveFileName(
+        path, _ = QFileDialog.getSaveFileName(
             self,
             "Save route as…",
             start_dir,
@@ -273,21 +295,23 @@ class MainWindow(QMainWindow):
         out = Path(path)
         if out.suffix.lower() not in (".gpx", ".tcx", ".fit"):
             out = out.with_suffix(".gpx")
+        self._write_route(active_entry.route, out)
 
-        rwgps_compat = False
-        if out.suffix.lower() == ".gpx":
+    def _write_route(self, route, out: Path) -> None:
+        """Write *route* to *out*; asks about RideWithGPS compat for GPX files."""
+        suffix = out.suffix.lower()
+        if suffix == ".gpx":
             rwgps_compat = self._ask_rwgps_compatibility()
             if rwgps_compat is None:
                 return
-
+            self._rwgps_compat = rwgps_compat
         try:
-            suffix = out.suffix.lower()
             if suffix == ".gpx":
-                write_gpx(active_entry.route, out, rwgps_compatible=rwgps_compat)
+                write_gpx(route, out, rwgps_compatible=self._rwgps_compat)
             elif suffix == ".tcx":
-                write_tcx(active_entry.route, out)
+                write_tcx(route, out)
             else:
-                write_fit(active_entry.route, out)
+                write_fit(route, out)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Error saving file", str(exc))
             return
@@ -643,8 +667,10 @@ class MainWindow(QMainWindow):
         self._routes[self._active_index] = RouteEntry(
             route=new_route, color=e.color, label=e.label, visible=e.visible,
         )
-        # Refresh only tables and status bar — map stays at current zoom/pan.
+        # Refresh tables, elevation, and status bar — map stays at current zoom/pan
+        # so the OSM overlay is preserved.
         self.right_panel.load_route(new_route)
+        self.elevation_widget.load_routes(self._build_display_routes(), self._active_index)
         self._set_dirty(True)
         self._update_status()
         # Inject the new marker and focus the appropriate table.
@@ -689,6 +715,27 @@ class MainWindow(QMainWindow):
                 self.elevation_widget.move_cursor(float(tp["distance"][idx]))
 
     # ------------------------------------------------------------------
+    # Dedup / fix-symbols slots
+    # ------------------------------------------------------------------
+
+    def _remove_duplicates(self) -> None:
+        if self._active_index < 0 or not self._routes:
+            return
+        route = self._routes[self._active_index].route
+        from gpx_editor.ui.dedup_dialog import DedupDialog
+        dlg = DedupDialog(route, self)
+        if dlg.exec() != DedupDialog.DialogCode.Accepted:
+            return
+        new_route = route.deduplicate(max_distance_m=dlg.threshold_m())
+        self._update_active_route(cues=new_route.cues, pois=new_route.pois)
+
+    def _fix_symbols(self) -> None:
+        if self._active_index < 0 or not self._routes:
+            return
+        new_route = self._routes[self._active_index].route.fix_symbols()
+        self._update_active_route(pois=new_route.pois)
+
+    # ------------------------------------------------------------------
     # Filter slots
     # ------------------------------------------------------------------
 
@@ -712,16 +759,8 @@ class MainWindow(QMainWindow):
         self._update_status()
         self._update_title()
 
-    def _refresh_map_and_elevation(self) -> None:
-        """Reload map and elevation using the currently visible (possibly filtered) data."""
-        if not self._routes:
-            self.map_widget.load_routes([], -1)
-            self.elevation_widget.load_routes([], -1)
-            return
-
-        # For the active route, substitute the filtered cues/pois from the table widgets
-        # so that only visible items appear on the map and elevation plot.
-        # All other routes are shown in full (they have no filter).
+    def _build_display_routes(self) -> list[RouteEntry]:
+        """Return the routes list with filtered cues/pois substituted for the active route."""
         display_routes = list(self._routes)
         if 0 <= self._active_index < len(self._routes):
             e = self._routes[self._active_index]
@@ -738,7 +777,15 @@ class MainWindow(QMainWindow):
                 label=e.label,
                 visible=e.visible,
             )
+        return display_routes
 
+    def _refresh_map_and_elevation(self) -> None:
+        """Reload map and elevation using the currently visible (possibly filtered) data."""
+        if not self._routes:
+            self.map_widget.load_routes([], -1)
+            self.elevation_widget.load_routes([], -1)
+            return
+        display_routes = self._build_display_routes()
         self.map_widget.load_routes(display_routes, self._active_index)
         self.elevation_widget.load_routes(display_routes, self._active_index)
 
@@ -749,11 +796,14 @@ class MainWindow(QMainWindow):
     def _set_dirty(self, dirty: bool) -> None:
         self._dirty = dirty
         has_active = bool(self._routes) and self._active_index >= 0
-        self._save_act.setEnabled(has_active)
+        self._save_act.setEnabled(has_active and self._open_path is not None)
+        self._save_as_act.setEnabled(has_active)
         self._osm_act.setEnabled(
             has_active
             and len(self._routes[self._active_index].route.track_points) > 0,
         )
+        self._dedup_act.setEnabled(has_active)
+        self._fix_symbols_act.setEnabled(has_active)
         self._update_title()
 
     def _update_title(self) -> None:

@@ -55,30 +55,37 @@ class RouteData:
     pois: pl.DataFrame = field(default_factory=empty_pois)
     source_file: str = ""
 
-    def deduplicate(self, distance_precision: int = 0) -> "RouteData":
-        """Remove duplicate cues and POIs with the same distance and name.
-        
-        Args:
-            distance_precision: Number of decimal places to round distance for comparison.
-                               Default 0 means round to nearest meter.
-        
-        Returns:
-            A new RouteData with duplicates removed.
+    def deduplicate(self, max_distance_m: float = 1.0) -> "RouteData":
+        """Remove duplicate cues and POIs that share the same name and are within
+        *max_distance_m* metres of each other along the track.
+
+        Rows are processed in distance order; the first occurrence is kept and any
+        later row with the same name within the tolerance window is dropped.
         """
         def dedup_df(df: pl.DataFrame) -> pl.DataFrame:
             if len(df) == 0:
                 return df
-            # Round distance for comparison and deduplicate on (distance, name)
-            # Use maintain_order=True to preserve original order
-            deduped = (
-                df.with_columns(pl.col("distance").round(distance_precision).alias("_dist_key"))
-                .unique(subset=["_dist_key", "name"], keep="first", maintain_order=True)
-                .drop("_dist_key", "index")
+            rows = df.sort("distance").to_dicts()
+            kept: list[dict] = []
+            for row in rows:
+                name = row.get("name") or ""
+                dist = row.get("distance") or 0.0
+                is_dup = any(
+                    (k.get("name") or "") == name
+                    and abs((k.get("distance") or 0.0) - dist) <= max_distance_m
+                    for k in kept
+                )
+                if not is_dup:
+                    kept.append(row)
+            if len(kept) == len(rows):
+                return df
+            return (
+                pl.DataFrame(kept, schema=df.schema)
+                .drop("index")
                 .with_row_index("index")
                 .cast({"index": pl.Int64})
             )
-            return deduped
-        
+
         return RouteData(
             track_points=self.track_points,
             cues=dedup_df(self.cues),

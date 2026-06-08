@@ -195,6 +195,36 @@ class DataFrameTableWidget(QWidget):
         self._view.selectionModel().blockSignals(False)
         self._view.scrollTo(self._model.index(idx, 0))
 
+    def current_row(self) -> int:
+        """Return the currently selected row index, or -1 if none."""
+        idx = self._view.currentIndex()
+        return idx.row() if idx.isValid() else -1
+
+    def select_next_row(self) -> None:
+        """Move selection to the next row (wraps to first if at end)."""
+        df = self._model._df
+        if len(df) == 0:
+            return
+        current = self.current_row()
+        next_row = (current + 1) % len(df) if current >= 0 else 0
+        self._view.selectRow(next_row)
+        self._view.scrollTo(self._model.index(next_row, 0))
+
+    def delete_current_and_select_next(self) -> None:
+        """Delete the current row and select the next one.
+
+        Emits row_deleted with the stable index value of the deleted row.
+        After deletion, selects the row that was next (now at the same position).
+        """
+        df = self._model._df
+        if len(df) == 0 or "index" not in df.columns:
+            return
+        current = self.current_row()
+        if current < 0:
+            return
+        index_val = int(df["index"][current])
+        self.row_deleted.emit(index_val)
+
     # ------------------------------------------------------------------
     # Filter
     # ------------------------------------------------------------------

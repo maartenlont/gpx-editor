@@ -47,7 +47,55 @@
 - [x] `main_window.py` — File → Open adds to route list instead of replacing; switching active route refreshes tables and elevation cursor
 - [x] Save As and Merge operate on the active route
 
-### Phase 8 — OSM POI Import
+### Phase 8 — Review Toolbar
+- [x] `ui/review_toolbar.py` — reusable ReviewToolbar widget with delete (red ✖) and skip (green ✔) buttons
+- [x] `ui/dataframe_table.py` — added `current_row()`, `select_next_row()`, `delete_current_and_select_next()` methods
+- [x] `ui/right_panel.py` — integrated ReviewToolbar into Cues and POIs tabs
+
+### Phase 8 — Review Toolbar (Details)
+
+**Goal:** Quick review workflow for cues and POIs using delete/skip buttons.
+
+#### New file
+
+**`src/gpx_editor/ui/review_toolbar.py`**
+
+`ReviewToolbar(QWidget)` — reusable toolbar with two buttons:
+- **✖ Delete** (red) — deletes the selected row and moves selection to the next row
+- **✔ Skip** (green) — moves selection to the next row without deleting
+
+Signals:
+- `delete_requested` — emitted when Delete button is clicked
+- `skip_requested` — emitted when Skip button is clicked
+
+#### Modified files
+
+**`src/gpx_editor/ui/dataframe_table.py`**
+
+Added methods to `DataFrameTableWidget`:
+- `current_row() -> int` — returns the currently selected row index, or -1 if none
+- `select_next_row()` — moves selection to the next row (wraps to first if at end)
+- `delete_current_and_select_next()` — emits `row_deleted` for the current row; after the route refreshes, the next row is automatically selected
+
+**`src/gpx_editor/ui/right_panel.py`**
+
+- Both the Cues and POIs tabs now include a `ReviewToolbar` above the table
+- Toolbar signals are wired to the table methods:
+  - `cue_toolbar.delete_requested → cue_table.delete_current_and_select_next`
+  - `cue_toolbar.skip_requested → cue_table.select_next_row`
+  - (same for POI toolbar)
+
+#### Usage
+
+1. Open a GPX/TCX file → switch to Cues or POIs tab.
+2. Select the first row to review.
+3. Click **✔ Skip** to move to next item without changes.
+4. Click **✖ Delete** to remove unwanted items and auto-advance.
+5. Repeat until all items are reviewed.
+
+---
+
+### Phase 9 — OSM POI Import
 
 **Goal:** query OpenStreetMap for nearby POIs (water taps, fuel stations, hotels, convenience stores, etc.), display them as an overlay on the map, and allow the user to right-click any OSM marker to add it to the active track's POI list.
 

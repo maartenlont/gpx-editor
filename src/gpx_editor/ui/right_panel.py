@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QTabWidget
+from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
 from gpx_editor.models.route import (
     RouteData,
@@ -15,6 +15,7 @@ from gpx_editor.models.route import (
 from gpx_editor.models.route_entry import RouteEntry
 from gpx_editor.ui.dataframe_table import DataFrameTableWidget
 from gpx_editor.ui.poi_icons import poi_icon_for_row
+from gpx_editor.ui.review_toolbar import ReviewToolbar
 from gpx_editor.ui.route_list_widget import RouteListWidget
 
 
@@ -50,10 +51,33 @@ class RightPanel(QTabWidget):
             editable_cols=["name", "symbol", "description"],
         )
 
+        # Wrap cue and POI tables with review toolbars
+        self.cue_toolbar = ReviewToolbar()
+        cue_container = QWidget()
+        cue_layout = QVBoxLayout(cue_container)
+        cue_layout.setContentsMargins(0, 0, 0, 0)
+        cue_layout.setSpacing(0)
+        cue_layout.addWidget(self.cue_toolbar)
+        cue_layout.addWidget(self.cue_table)
+
+        self.poi_toolbar = ReviewToolbar()
+        poi_container = QWidget()
+        poi_layout = QVBoxLayout(poi_container)
+        poi_layout.setContentsMargins(0, 0, 0, 0)
+        poi_layout.setSpacing(0)
+        poi_layout.addWidget(self.poi_toolbar)
+        poi_layout.addWidget(self.poi_table)
+
         self.addTab(self.route_list, "Routes")
         self.addTab(self.track_table, "Track Points")
-        self.addTab(self.cue_table, "Cues")
-        self.addTab(self.poi_table, "POIs")
+        self.addTab(cue_container, "Cues")
+        self.addTab(poi_container, "POIs")
+
+        # Wire review toolbar signals
+        self.cue_toolbar.delete_requested.connect(self.cue_table.delete_current_and_select_next)
+        self.cue_toolbar.skip_requested.connect(self.cue_table.select_next_row)
+        self.poi_toolbar.delete_requested.connect(self.poi_table.delete_current_and_select_next)
+        self.poi_toolbar.skip_requested.connect(self.poi_table.select_next_row)
 
         for tbl in (self.track_table, self.cue_table, self.poi_table):
             tbl.row_selected.connect(self.row_selected)
