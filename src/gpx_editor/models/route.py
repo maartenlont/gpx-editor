@@ -55,6 +55,26 @@ class RouteData:
     pois: pl.DataFrame = field(default_factory=empty_pois)
     source_file: str = ""
 
+    def __hash__(self) -> int:
+        """Hash based on track_points locations (lat, lon)."""
+        if len(self.track_points) == 0:
+            return hash(())
+        lats = tuple(self.track_points["lat"].to_list())
+        lons = tuple(self.track_points["lon"].to_list())
+        return hash((lats, lons))
+
+    def __eq__(self, other: object) -> bool:
+        """Two routes are equal if their hashes match."""
+        if not isinstance(other, RouteData):
+            return NotImplemented
+        return hash(self) == hash(other)
+
+    def __ne__(self, other: object) -> bool:
+        """Two routes are not equal if their hashes differ."""
+        if not isinstance(other, RouteData):
+            return NotImplemented
+        return hash(self) != hash(other)
+
     def deduplicate(self, max_distance_m: float = 1.0) -> "RouteData":
         """Remove duplicate cues and POIs that share the same name and are within
         *max_distance_m* metres of each other along the track.
