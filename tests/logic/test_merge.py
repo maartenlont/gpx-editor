@@ -244,7 +244,20 @@ class TestEmptySource:
 
 class TestExistingTargetWaypointsPreserved:
     def test_existing_cues_kept(self, target, source_with_cues):
-        existing_cue = _make_cues([(*PT1, "Existing target cue")])
+        # Use a different cue_type to avoid deduplication with merged cue
+        existing_cue = pl.DataFrame([{
+            "index": 0,
+            "lat": PT1[0],
+            "lon": PT1[1],
+            "name": "Existing target cue",
+            "description": "",
+            "cue_type": "Right",  # Different from "Left" used by _make_cues
+            "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "cue_type": pl.String, "distance": pl.Float64,
+        })
         target_with_cue = RouteData(
             track_points=target.track_points, cues=existing_cue
         )
@@ -337,3 +350,127 @@ class TestPOIs:
         result = copy_cues_pois(source_with_pois, target)
         near = result.pois.filter(pl.col("name") == "Near POI")
         assert near["distance"][0] == pytest.approx(PT1_DIST_M)
+
+
+class TestDeduplication:
+    """Verify that duplicates (same type at same distance) are deduplicated."""
+
+    def test_cue_with_description_kept_over_empty(self, target):
+        """When two cues have same type/distance, keep the one with description."""
+        existing_cue = pl.DataFrame([{
+            "index": 0,
+            "lat": PT0[0], "lon": PT0[1],
+            "name": "No desc", "description": "",
+            "cue_type": "Left", "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "cue_type": pl.String, "distance": pl.Float64,
+        })
+        source_cue = pl.DataFrame([{
+            "index": 0,
+            "lat": CUE_NEAR[0], "lon": CUE_NEAR[1],
+            "name": "With desc", "description": "Important note",
+            "cue_type": "Left", "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "cue_type": pl.String, "distance": pl.Float64,
+        })
+        target_with_cue = RouteData(track_points=target.track_points, cues=existing_cue)
+        source = RouteData(track_points=_make_track([(*PT0, 0.0)]), cues=source_cue)
+
+        result = copy_cues_pois(source, target_with_cue)
+
+        assert len(result.cues) == 1
+        assert result.cues["name"][0] == "With desc"
+        assert result.cues["description"][0] == "Important note"
+
+    def test_first_cue_kept_when_both_have_description(self, target):
+        """When both cues have descriptions, keep the first (existing target)."""
+        existing_cue = pl.DataFrame([{
+            "index": 0,
+            "lat": PT0[0], "lon": PT0[1],
+            "name": "First", "description": "First description",
+            "cue_type": "Left", "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "cue_type": pl.String, "distance": pl.Float64,
+        })
+        source_cue = pl.DataFrame([{
+            "index": 0,
+            "lat": CUE_NEAR[0], "lon": CUE_NEAR[1],
+            "name": "Second", "description": "Second description",
+            "cue_type": "Left", "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "cue_type": pl.String, "distance": pl.Float64,
+        })
+        target_with_cue = RouteData(track_points=target.track_points, cues=existing_cue)
+        source = RouteData(track_points=_make_track([(*PT0, 0.0)]), cues=source_cue)
+
+        result = copy_cues_pois(source, target_with_cue)
+
+        assert len(result.cues) == 1
+        assert result.cues["name"][0] == "First"
+
+    def test_different_types_not_deduplicated(self, target):
+        """Cues with different types at same distance are both kept."""
+        existing_cue = pl.DataFrame([{
+            "index": 0,
+            "lat": PT0[0], "lon": PT0[1],
+            "name": "Left turn", "description": "",
+            "cue_type": "Left", "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "cue_type": pl.String, "distance": pl.Float64,
+        })
+        source_cue = pl.DataFrame([{
+            "index": 0,
+            "lat": CUE_NEAR[0], "lon": CUE_NEAR[1],
+            "name": "Right turn", "description": "",
+            "cue_type": "Right", "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "cue_type": pl.String, "distance": pl.Float64,
+        })
+        target_with_cue = RouteData(track_points=target.track_points, cues=existing_cue)
+        source = RouteData(track_points=_make_track([(*PT0, 0.0)]), cues=source_cue)
+
+        result = copy_cues_pois(source, target_with_cue)
+
+        assert len(result.cues) == 2
+
+    def test_poi_with_description_kept_over_empty(self, target):
+        """When two POIs have same symbol/distance, keep the one with description."""
+        existing_poi = pl.DataFrame([{
+            "index": 0,
+            "lat": PT1[0], "lon": PT1[1],
+            "name": "No desc", "description": "",
+            "symbol": "Water", "distance": PT1_DIST_M,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "symbol": pl.String, "distance": pl.Float64,
+        })
+        source_poi = pl.DataFrame([{
+            "index": 0,
+            "lat": POI_NEAR[0], "lon": POI_NEAR[1],
+            "name": "With desc", "description": "Water fountain here",
+            "symbol": "Water", "distance": 0.0,
+        }], schema={
+            "index": pl.Int64, "lat": pl.Float64, "lon": pl.Float64,
+            "name": pl.String, "description": pl.String,
+            "symbol": pl.String, "distance": pl.Float64,
+        })
+        target_with_poi = RouteData(track_points=target.track_points, pois=existing_poi)
+        source = RouteData(track_points=_make_track([(*PT0, 0.0)]), pois=source_poi)
+
+        result = copy_cues_pois(source, target_with_poi)
+
+        assert len(result.pois) == 1
+        assert result.pois["name"][0] == "With desc"

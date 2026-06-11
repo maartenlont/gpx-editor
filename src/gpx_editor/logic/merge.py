@@ -81,13 +81,44 @@ def _filter_and_snap(
     return pl.DataFrame(kept, schema=waypoints.schema)
 
 
+def _has_description(row: dict) -> bool:
+    """Return True if the row has a non-empty description."""
+    desc = row.get("description")
+    return desc is not None and str(desc).strip() != ""
+
+
 def _combine(existing: pl.DataFrame, new: pl.DataFrame) -> pl.DataFrame:
-    """Concatenate *existing* and *new*, sort by distance, and reset index."""
+    """Concatenate *existing* and *new*, deduplicate, sort by distance, and reset index.
+
+    Deduplication: when two items have the same type (cue_type or symbol) at the
+    same distance, keep the one with a description. If both have descriptions,
+    keep the first (existing) one.
+    """
     if len(new) == 0:
         return existing
     combined = pl.concat([existing, new]) if len(existing) > 0 else new
-    combined = combined.sort("distance")
-    combined = combined.with_columns(
-        pl.Series("index", list(range(len(combined))), dtype=pl.Int64),
+
+    # Determine type column: cue_type for cues, symbol for POIs
+    type_col = "cue_type" if "cue_type" in combined.columns else "symbol"
+
+    # Group by (distance, type) and pick the best row from each group
+    seen: dict[tuple[float, str], dict] = {}
+    for row in combined.iter_rows(named=True):
+        key = (row["distance"], row.get(type_col) or "")
+        if key not in seen:
+            seen[key] = row
+        else:
+            # Keep the one with a description; if both have, keep the first
+            existing_has_desc = _has_description(seen[key])
+            new_has_desc = _has_description(row)
+            if not existing_has_desc and new_has_desc:
+                seen[key] = row
+
+    deduped = list(seen.values())
+    deduped.sort(key=lambda r: r["distance"])
+
+    result = pl.DataFrame(deduped, schema=combined.schema)
+    result = result.with_columns(
+        pl.Series("index", list(range(len(result))), dtype=pl.Int64),
     )
-    return combined
+    return result
