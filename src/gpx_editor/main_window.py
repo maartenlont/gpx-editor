@@ -28,6 +28,7 @@ from gpx_editor.io.fit_reader import read_fit
 from gpx_editor.io.fit_writer import write_fit
 from gpx_editor.io.gpx_reader import read_gpx
 from gpx_editor.io.gpx_writer import write_gpx
+from gpx_editor.io.osm_cache import DEFAULT_CACHE_DIR, OsmCache, route_hash
 from gpx_editor.io.osm_reader import OSM_CATEGORIES, query_osm_pois
 from gpx_editor.io.tcx_reader import read_tcx
 from gpx_editor.io.tcx_writer import write_tcx
@@ -46,7 +47,7 @@ class MainWindow(QMainWindow):
         self._open_path: Path | None = None
         self._dirty = False
         self._rwgps_compat: bool = False  # remembered across Save / Save As for GPX
-        self._osm_cache: dict[tuple, object] = {}  # session cache: (category, bbox) → df
+        self._osm_cache_mgr = OsmCache(DEFAULT_CACHE_DIR)
         self._setup_ui()
         self._setup_menu()
         self._setup_status_bar()
@@ -138,10 +139,6 @@ class MainWindow(QMainWindow):
         self._merge_act.setEnabled(False)
         self._merge_act.triggered.connect(self._open_merge_dialog)
 
-        self._osm_act = edit_menu.addAction("Import &OSM POIs…")
-        self._osm_act.setEnabled(False)
-        self._osm_act.triggered.connect(self._open_osm_dialog)
-
         edit_menu.addSeparator()
 
         self._dedup_act = edit_menu.addAction("Remove &Duplicates…")
@@ -151,6 +148,15 @@ class MainWindow(QMainWindow):
         self._fix_symbols_act = edit_menu.addAction("Fix &Symbols")
         self._fix_symbols_act.setEnabled(False)
         self._fix_symbols_act.triggered.connect(self._fix_symbols)
+
+        poi_menu = self.menuBar().addMenu("&POI")
+
+        self._osm_act = poi_menu.addAction("Import from &OSM…")
+        self._osm_act.setEnabled(False)
+        self._osm_act.triggered.connect(self._open_osm_dialog)
+
+        self._poi_cache_menu = poi_menu.addMenu("&Cache")
+        self._poi_cache_menu.aboutToShow.connect(self._rebuild_poi_cache_menu)
 
     def _setup_status_bar(self) -> None:
         self._status_label = QLabel("No file loaded")
@@ -534,59 +540,90 @@ class MainWindow(QMainWindow):
         category = dlg.category()
         buffer_m = dlg.buffer_m()
         tags = OSM_CATEGORIES[category]
-        tp = route.track_points
+        r_hash = route_hash(route)
 
-        def _run_query(viewport):
-            if viewport:
-                vs, vw, vn, ve = viewport
-                # Restrict to track points inside the current viewport so that a
-                # long route only queries the visible section.
-                visible_tp = tp.filter(
-                    (pl.col("lat") >= vs) & (pl.col("lat") <= vn) &
-                    (pl.col("lon") >= vw) & (pl.col("lon") <= ve),
+        # Check persistent cache first.
+        cached = self._osm_cache_mgr.get(r_hash, category)
+        if cached is not None:
+            cached_radius, cached_df = cached
+            if buffer_m <= cached_radius:
+                # Requested radius is within the cached radius — serve from cache.
+                n = len(cached_df)
+                self._status_label.setText(
+                    f"Loaded {n} cached '{category}' POI{'s' if n != 1 else ''}"
+                    " — click a marker to add to track",
                 )
-                if len(visible_tp) == 0:
-                    self._status_label.setText(
-                        "No track visible in current map view — pan to the route first.",
-                    )
-                    return
-            else:
-                visible_tp = tp
+                self.map_widget.load_osm_pois(cached_df)
+                return
+            # Requested radius exceeds the cached one — must re-query.
 
-            lats = visible_tp["lat"].to_list()
-            lons = visible_tp["lon"].to_list()
+        # Cache miss or stale — query OSM for the full route.
+        lats = route.track_points["lat"].to_list()
+        lons = route.track_points["lon"].to_list()
+        self._status_label.setText(f"Querying OSM for '{category}'…")
+        self.statusBar().repaint()
+        try:
+            df = query_osm_pois(lats, lons, tags, buffer_m)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "OSM query failed", str(exc))
+            self._update_status()
+            return
 
-            # Cache key: category + buffer + extent of the visible section (rounded
-            # to ~110 m so minor panning doesn't bust the cache unnecessarily).
-            cache_key = (
-                category, buffer_m,
-                round(min(lats), 3), round(min(lons), 3),
-                round(max(lats), 3), round(max(lons), 3),
-            )
-            if cache_key in self._osm_cache:
-                df = self._osm_cache[cache_key]
-                cached = True
-            else:
-                self._status_label.setText(f"Querying OSM for '{category}'…")
-                self.statusBar().repaint()
-                try:
-                    df = query_osm_pois(lats, lons, tags, buffer_m)
-                except Exception as exc:  # noqa: BLE001
-                    QMessageBox.critical(self, "OSM query failed", str(exc))
-                    self._update_status()
-                    return
-                self._osm_cache[cache_key] = df
-                cached = False
+        self._osm_cache_mgr.put(r_hash, category, buffer_m, df)
+        n = len(df)
+        self._status_label.setText(
+            f"Found {n} OSM POI{'s' if n != 1 else ''} for '{category}'"
+            " — click a marker to add to track",
+        )
+        self.map_widget.load_osm_pois(df)
 
-            n = len(df)
-            suffix = " (cached)" if cached else ""
-            self._status_label.setText(
-                f"Found {n} OSM POI{'s' if n != 1 else ''}{suffix}"
-                " — click a marker to add to track",
-            )
-            self.map_widget.load_osm_pois(df)
+    def _rebuild_poi_cache_menu(self) -> None:
+        """Populate the POI Cache submenu for the currently active route."""
+        self._poi_cache_menu.clear()
+        if self._active_index < 0 or not self._routes:
+            no_act = self._poi_cache_menu.addAction("No route loaded")
+            no_act.setEnabled(False)
+            return
 
-        self.map_widget.get_viewport_bbox(_run_query)
+        r_hash = route_hash(self._routes[self._active_index].route)
+        entries = self._osm_cache_mgr.entries_for_route(r_hash)
+
+        if entries:
+            for poi_type, radius_m in entries:
+                label = f"{poi_type}  ({radius_m:.0f} m)"
+                act = self._poi_cache_menu.addAction(label)
+                act.triggered.connect(
+                    lambda checked=False, rh=r_hash, pt=poi_type:
+                        self._load_cached_pois(rh, pt),
+                )
+        else:
+            no_act = self._poi_cache_menu.addAction("No cached data for this route")
+            no_act.setEnabled(False)
+
+        self._poi_cache_menu.addSeparator()
+        clear_act = self._poi_cache_menu.addAction("Remove all cached data for this route")
+        clear_act.setEnabled(bool(entries))
+        clear_act.triggered.connect(self._clear_route_cache)
+
+    def _load_cached_pois(self, r_hash: str, poi_type: str) -> None:
+        result = self._osm_cache_mgr.get(r_hash, poi_type)
+        if result is None:
+            self._status_label.setText(f"Cache entry for '{poi_type}' no longer exists.")
+            return
+        _, df = result
+        n = len(df)
+        self._status_label.setText(
+            f"Loaded {n} cached '{poi_type}' POI{'s' if n != 1 else ''}"
+            " — click a marker to add to track",
+        )
+        self.map_widget.load_osm_pois(df)
+
+    def _clear_route_cache(self) -> None:
+        if self._active_index < 0 or not self._routes:
+            return
+        r_hash = route_hash(self._routes[self._active_index].route)
+        self._osm_cache_mgr.clear_route(r_hash)
+        self._status_label.setText("POI cache cleared for this route.")
 
     def _on_osm_poi_add(
         self, lat: float, lon: float, name: str, description: str, symbol: str, wptype: str,
